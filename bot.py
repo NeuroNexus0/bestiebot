@@ -1,11 +1,10 @@
-# bot.py
 import random
 import os
 from pyrogram import Client, filters
 from config import API_ID, API_HASH, BOT_TOKEN
 
 # Initialize bot client
-app = Client("bestie_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
+app = Client("bestie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # Quotes list
 quotes = [
@@ -64,5 +63,3 @@ def music_handler(client, message):
 
 # Run the bot
 app.run()
-
-
