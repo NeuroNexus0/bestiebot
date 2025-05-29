@@ -1,23 +1,26 @@
-import random
 import os
-from pyrogram import Client, filters
+from flask import Flask, request
+from pyrogram import Client
+from pyrogram.types import Update
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import pytz
+import random
 
 # Load from environment
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Set this in Render
-PORT = int(os.environ.get("PORT", 10000))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+PORT = int(os.getenv("PORT", 10000))
 
-# Initialize bot client
+# Create Pyrogram Client
 app = Client("bestie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+flask_app = Flask(__name__)
 
 BESTIE_USER_ID = 5672706639
 
-# Quotes, files, etc.
+# Quotes & files
 quotes = [
     "You're not just a star, you're my whole sky. ✨",
     "Your smile makes my day every time 😊",
@@ -31,38 +34,25 @@ photo_files = [os.path.join(photo_folder, f) for f in os.listdir(photo_folder) i
 song_folder = "songs"
 song_files = [os.path.join(song_folder, f) for f in os.listdir(song_folder) if f.lower().endswith(('.mp3', '.wav', '.m4a'))]
 
-@app.on_message(filters.command("start"))
-def start_handler(client, message):
-    message.reply_text(
-        "Hey Bestie! 💌\n\nI'm your special bot made with love.\nTry these commands:\n"
-        "/quote – for a sweet message 💬\n"
-        "/photo or /vibe – for a surprise picture 📸\n"
-        "/music – for a random vibe 🎶\n"
-        "/id – to get your user ID 🔍\n"
-        "/ttt – play Tic Tac Toe 🎮"
-    )
-
-@app.on_message(filters.command("quote"))
-def quote_handler(client, message):
-    message.reply_text(random.choice(quotes))
-
-@app.on_message(filters.command(["photo", "vibe"]))
-def photo_handler(client, message):
-    if photo_files:
-        message.reply_photo(photo=random.choice(photo_files))
-    else:
-        message.reply_text("Oops, no photos found!")
-
-@app.on_message(filters.command("music"))
-def music_handler(client, message):
-    if song_files:
-        message.reply_audio(audio=random.choice(song_files), caption="Here's a vibe for you 🎧")
-    else:
-        message.reply_text("Oops, no songs found!")
-
-@app.on_message(filters.command("id"))
-def id_handler(client, message):
-    message.reply_text(f"Your user ID is: `{message.from_user.id}`", quote=True)
+# Handlers
+@app.on_message()
+def handle_all_messages(client, message):
+    if message.text == "/start":
+        message.reply_text("Hey Bestie! 💌\n\nTry these:\n/quote\n/photo\n/music\n/ttt\n/id")
+    elif message.text == "/quote":
+        message.reply_text(random.choice(quotes))
+    elif message.text in ["/photo", "/vibe"]:
+        if photo_files:
+            message.reply_photo(photo=random.choice(photo_files))
+        else:
+            message.reply_text("Oops, no photos found!")
+    elif message.text == "/music":
+        if song_files:
+            message.reply_audio(audio=random.choice(song_files), caption="Here's a vibe 🎧")
+        else:
+            message.reply_text("Oops, no songs found!")
+    elif message.text == "/id":
+        message.reply_text(f"Your user ID is: `{message.from_user.id}`", quote=True)
 
 # Scheduler
 def send_good_morning():
@@ -76,79 +66,15 @@ scheduler.add_job(send_good_morning, trigger='cron', hour=7, minute=30)
 scheduler.add_job(send_good_night, trigger='cron', hour=22, minute=0)
 scheduler.start()
 
-# Tic Tac Toe game
-games = {}
+# Flask endpoint for webhook
+@flask_app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def receive_update():
+    update = Update.de_json(request.get_json(force=True))
+    app.process_update(update)
+    return "OK"
 
-def render_board(board):
-    symbols = {'X': '❌', 'O': '⭕', '': '⬜'}
-    return '\n'.join(' '.join(symbols[cell] for cell in row) for row in board)
-
-def check_winner(board):
-    lines = board + list(zip(*board)) + [[board[i][i] for i in range(3)], [board[i][2 - i] for i in range(3)]]
-    for line in lines:
-        if line.count(line[0]) == 3 and line[0] != '':
-            return line[0]
-    return None
-
-def bot_move(board):
-    empty = [(r, c) for r in range(3) for c in range(3) if board[r][c] == '']
-    return random.choice(empty) if empty else None
-
-@app.on_message(filters.command("ttt"))
-def ttt_start(client, message):
-    user_id = message.from_user.id
-    games[user_id] = {'board': [[''] * 3 for _ in range(3)], 'turn': 'X'}
-    message.reply_text("🎮 Let's play Tic Tac Toe!\nJust send a number from 1-9 to make a move.\n\n" +
-                       render_board(games[user_id]['board']), quote=True)
-
-@app.on_message(filters.text & filters.private)
-def ttt_play(client, message):
-    user_id = message.from_user.id
-    if user_id not in games or not message.text.isdigit():
-        return
-
-    move = int(message.text)
-    if not 1 <= move <= 9:
-        return message.reply_text("Choose a number between 1 and 9 only!")
-
-    row = (move - 1) // 3
-    col = (move - 1) % 3
-    game = games[user_id]
-    board = game['board']
-
-    if board[row][col] != '':
-        return message.reply_text("That spot is already taken!")
-
-    board[row][col] = 'X'
-    winner = check_winner(board)
-    if winner:
-        message.reply_text(render_board(board) + f"\n\n🎉 You win!", quote=True)
-        del games[user_id]
-        return
-
-    if all(cell for row in board for cell in row):
-        message.reply_text(render_board(board) + "\n\n🤝 It's a draw!", quote=True)
-        del games[user_id]
-        return
-
-    br, bc = bot_move(board)
-    board[br][bc] = 'O'
-    winner = check_winner(board)
-
-    if winner:
-        message.reply_text(render_board(board) + f"\n\n💀 Bot wins!", quote=True)
-        del games[user_id]
-    elif all(cell for row in board for cell in row):
-        message.reply_text(render_board(board) + "\n\n🤝 It's a draw!", quote=True)
-        del games[user_id]
-    else:
-        message.reply_text(render_board(board) + "\n\nYour turn! Send 1-9", quote=True)
-
-# --- Run with webhook ---
+# Start everything
 if __name__ == "__main__":
-    app.run(
-        webhook=True,
-        listen="0.0.0.0",
-        port=PORT,
-        webhook_url=WEBHOOK_URL  # set your public Render URL as env
-    )
+    with app:
+        app.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
+        flask_app.run(host="0.0.0.0", port=PORT)
