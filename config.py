@@ -1,5 +1,5 @@
-# config.py
-api_id = 19300364  # ← Your Telegram API ID
-api_hash = "029cff3b7b2727f74ceb42ee080d83ee"  # ← Your Telegram API Hash
-bot_token = "7576139470:AAHOXc9L9OG_ilYB7ofmQXhgXibhLURwXBA"  # ← From BotFather
+import os
 
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
