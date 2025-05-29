@@ -1,14 +1,12 @@
 import os
 import random
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from fastapi import FastAPI, Request
 from starlette.responses import PlainTextResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
 import httpx
 import asyncio
-import copy
 
 # Load environment variables
 API_ID = int(os.getenv("API_ID"))
@@ -41,106 +39,146 @@ photo_files = [os.path.join(photo_folder, f) for f in os.listdir(photo_folder) i
 song_folder = "songs"
 song_files = [os.path.join(song_folder, f) for f in os.listdir(song_folder) if f.lower().endswith(('.mp3', '.wav', '.m4a'))]
 
-# --------------------------
-# Tic Tac Toe Game Logic
-# --------------------------
+# --- Tic Tac Toe game logic ---
 
-user_games = {}  # store user_id -> game state dict
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-def empty_board():
-    return [" "] * 9
+# Game states stored per user (user_id -> game state)
+games = {}
 
 def render_board_text(board):
-    # Show board as text with numbers for empty cells
-    def cell_text(i):
-        return board[i] if board[i] != " " else str(i+1)
+    # Map symbols to emojis with colors:
+    symbol_map = {
+        "X": "❌",  # red cross mark
+        "O": "⚫",  # black circle
+        " ": "⬜"   # white square for empty
+    }
+
     rows = []
     for i in range(3):
-        row = " | ".join(cell_text(j + i*3) for j in range(3))
-        rows.append(row)
-    return "\n---------\n".join(rows)
+        row_symbols = [symbol_map[board[j + i*3]] for j in range(3)]
+        row_text = " | ".join(row_symbols)
+        rows.append(row_text)
 
-def check_winner(board):
+    board_text = "\n---------\n".join(rows)
+    return board_text
+
+def check_winner(board, player):
     wins = [
-        [0,1,2],[3,4,5],[6,7,8],
-        [0,3,6],[1,4,7],[2,5,8],
-        [0,4,8],[2,4,6]
+        [0,1,2], [3,4,5], [6,7,8],  # rows
+        [0,3,6], [1,4,7], [2,5,8],  # cols
+        [0,4,8], [2,4,6]            # diagonals
     ]
     for line in wins:
-        if board[line[0]] != " " and board[line[0]] == board[line[1]] == board[line[2]]:
-            return board[line[0]]  # 'X' or 'O'
-    if " " not in board:
-        return "Draw"
-    return None
+        if all(board[pos] == player for pos in line):
+            return True
+    return False
 
-def minimax(board, is_maximizing):
-    winner = check_winner(board)
-    if winner == "O":  # bot wins
-        return 1
-    elif winner == "X":  # user wins
-        return -1
-    elif winner == "Draw":
+def is_board_full(board):
+    return all(space != " " for space in board)
+
+def get_available_moves(board):
+    return [i for i, spot in enumerate(board) if spot == " "]
+
+# Minimax for tough bot AI playing O
+def minimax(board, depth, is_maximizing):
+    if check_winner(board, "O"):
+        return 10 - depth
+    if check_winner(board, "X"):
+        return depth - 10
+    if is_board_full(board):
         return 0
 
     if is_maximizing:
-        best_score = -float("inf")
-        for i in range(9):
-            if board[i] == " ":
-                board[i] = "O"
-                score = minimax(board, False)
-                board[i] = " "
-                best_score = max(score, best_score)
+        best_score = -float('inf')
+        for move in get_available_moves(board):
+            board[move] = "O"
+            score = minimax(board, depth + 1, False)
+            board[move] = " "
+            best_score = max(score, best_score)
         return best_score
     else:
-        best_score = float("inf")
-        for i in range(9):
-            if board[i] == " ":
-                board[i] = "X"
-                score = minimax(board, True)
-                board[i] = " "
-                best_score = min(score, best_score)
+        best_score = float('inf')
+        for move in get_available_moves(board):
+            board[move] = "X"
+            score = minimax(board, depth + 1, True)
+            board[move] = " "
+            best_score = min(score, best_score)
         return best_score
 
-def bot_move_minimax(board):
-    best_score = -float("inf")
+def bot_move(board):
+    best_score = -float('inf')
     best_move = None
-    for i in range(9):
-        if board[i] == " ":
-            board[i] = "O"
-            score = minimax(board, False)
-            board[i] = " "
-            if score > best_score:
-                best_score = score
-                best_move = i
-    if best_move is not None:
-        board[best_move] = "O"
-    return board
+    for move in get_available_moves(board):
+        board[move] = "O"
+        score = minimax(board, 0, False)
+        board[move] = " "
+        if score > best_score:
+            best_score = score
+            best_move = move
+    return best_move
 
-def build_board_markup(board):
-    buttons = []
-    for i in range(9):
-        text = board[i] if board[i] != " " else str(i+1)
-        buttons.append(InlineKeyboardButton(text=text, callback_data=f"ttt_{i}"))
-    keyboard = [
-        buttons[0:3],
-        buttons[3:6],
-        buttons[6:9]
-    ]
+def build_board_keyboard(board):
+    keyboard = []
+    for row in range(3):
+        buttons = []
+        for col in range(3):
+            idx = row * 3 + col
+            if board[idx] == " ":
+                buttons.append(InlineKeyboardButton(str(idx+1), callback_data=f"ttt_{idx}"))
+            else:
+                # Show emoji, no callback
+                symbol_map = {"X": "❌", "O": "⚫"}
+                buttons.append(InlineKeyboardButton(symbol_map[board[idx]], callback_data="noop"))
+        keyboard.append(buttons)
     return InlineKeyboardMarkup(keyboard)
 
-async def start_ttt_game(user_id):
-    user_games[user_id] = {
-        "board": empty_board(),
-        "turn": "user"
-    }
+async def start_game(user_id):
+    board = [" "] * 9
+    games[user_id] = board
+    text = "Your turn! You're ❌ (X).\n\n" + render_board_text(board)
+    markup = build_board_keyboard(board)
+    return text, markup
 
-async def end_ttt_game(user_id):
-    if user_id in user_games:
-        del user_games[user_id]
+async def handle_move(user_id, idx):
+    board = games.get(user_id)
+    if board is None:
+        return None, None, "No game in progress. Send /ttt to start."
 
-# --------------------------
-# Bot Command Handlers
-# --------------------------
+    if board[idx] != " ":
+        return None, None, "Invalid move! This cell is already taken."
+
+    # Player move
+    board[idx] = "X"
+    if check_winner(board, "X"):
+        text = render_board_text(board) + "\n\nYou won! 🎉 Send /ttt to play again."
+        games.pop(user_id)
+        return text, None, None
+    elif is_board_full(board):
+        text = render_board_text(board) + "\n\nIt's a draw! Send /ttt to try again."
+        games.pop(user_id)
+        return text, None, None
+
+    # Bot move
+    bot_idx = bot_move(board)
+    if bot_idx is not None:
+        board[bot_idx] = "O"
+
+    if check_winner(board, "O"):
+        text = render_board_text(board) + "\n\nI won! Better luck next time 😎 Send /ttt to play again."
+        games.pop(user_id)
+        return text, None, None
+    elif is_board_full(board):
+        text = render_board_text(board) + "\n\nIt's a draw! Send /ttt to try again."
+        games.pop(user_id)
+        return text, None, None
+
+    # Game continues
+    text = "Your turn! You're ❌ (X).\n\n" + render_board_text(board)
+    markup = build_board_keyboard(board)
+    return text, markup, None
+
+# --- Telegram commands handlers ---
 
 @bot.on_message(filters.command("start"))
 async def start_handler(client, message):
@@ -175,88 +213,35 @@ async def music_handler(client, message):
 async def id_handler(client, message):
     await message.reply_text(f"Your user ID is: `{message.from_user.id}`", quote=True)
 
+# Start Tic Tac Toe game
 @bot.on_message(filters.command("ttt"))
-async def ttt_start_handler(client, message):
+async def ttt_handler(client, message):
     user_id = message.from_user.id
-    await start_ttt_game(user_id)
-    game = user_games[user_id]
-    text = "Let's play Tic Tac Toe! You are X, I am O.\n\n" \
-           "Make your move by pressing a number below:\n\n" \
-           f"{render_board_text(game['board'])}"
-    markup = build_board_markup(game['board'])
+    text, markup = await start_game(user_id)
     await message.reply_text(text, reply_markup=markup)
 
-# --------------------------
-# Callback query handler for Tic Tac Toe
-# --------------------------
-
+# Handle callback queries (button presses) for Tic Tac Toe moves
 @bot.on_callback_query(filters.regex(r"ttt_\d"))
-async def ttt_callback_handler(client, callback_query):
+async def ttt_callback(client, callback_query):
     user_id = callback_query.from_user.id
-    data = callback_query.data
-    if user_id not in user_games:
-        await callback_query.answer("You have no active Tic Tac Toe game. Send /ttt to start one.", show_alert=True)
+    data = callback_query.data  # format: ttt_0 .. ttt_8
+    idx = int(data.split("_")[1])
+
+    text, markup, error = await handle_move(user_id, idx)
+    if error:
+        await callback_query.answer(error, show_alert=True)
         return
 
-    game = user_games[user_id]
-    board = game['board']
-
-    # User move index
-    try:
-        move_index = int(data.split("_")[1])
-    except:
-        await callback_query.answer("Invalid move.")
-        return
-
-    if board[move_index] != " ":
-        await callback_query.answer("That cell is already taken! Choose another.", show_alert=True)
-        return
-
-    # User move
-    board[move_index] = "X"
-
-    winner = check_winner(board)
-    if winner:
-        # Game over after user move
-        if winner == "X":
-            text = f"You won! 🎉\n\nFinal board:\n{render_board_text(board)}"
-        elif winner == "O":
-            text = f"I won! 🤖\n\nFinal board:\n{render_board_text(board)}"
-        else:
-            text = f"It's a draw! 🤝\n\nFinal board:\n{render_board_text(board)}"
-        markup = None
-        await callback_query.message.reply_text(text)
-        await callback_query.answer()
-        await end_ttt_game(user_id)
-        return
-
-    # Bot move
-    bot_move_minimax(board)
-
-    winner = check_winner(board)
-    if winner:
-        # Game over after bot move
-        if winner == "X":
-            text = f"You won! 🎉\n\nFinal board:\n{render_board_text(board)}"
-        elif winner == "O":
-            text = f"I won! 🤖\n\nFinal board:\n{render_board_text(board)}"
-        else:
-            text = f"It's a draw! 🤝\n\nFinal board:\n{render_board_text(board)}"
-        markup = None
-        await callback_query.message.reply_text(text)
-        await callback_query.answer()
-        await end_ttt_game(user_id)
-        return
-
-    # Continue game
-    text = f"Your turn! You're X.\n\n{render_board_text(board)}"
-    markup = build_board_markup(board)
-    await callback_query.message.reply_text(text, reply_markup=markup)
+    # Edit the original message with updated board
+    await callback_query.message.edit_text(text, reply_markup=markup)
     await callback_query.answer()
 
-# --------------------------
-# Daily scheduled messages
-# --------------------------
+@bot.on_callback_query(filters.regex("noop"))
+async def noop_handler(client, callback_query):
+    # Just answer silently for disabled buttons
+    await callback_query.answer()
+
+# --- Daily scheduled messages ---
 
 async def send_good_morning():
     await bot.send_message(BESTIE_USER_ID, "🌞 Good morning bestie! Hope your day is as lovely as you are 💖")
@@ -267,9 +252,7 @@ async def send_good_night():
 scheduler.add_job(send_good_morning, trigger='cron', hour=7, minute=30)
 scheduler.add_job(send_good_night, trigger='cron', hour=22, minute=0)
 
-# --------------------------
-# Webhook endpoint for Telegram updates
-# --------------------------
+# --- Webhook endpoint for Telegram updates ---
 
 @app.post(f"/{BOT_TOKEN}")
 async def telegram_webhook(request: Request):
@@ -277,14 +260,12 @@ async def telegram_webhook(request: Request):
     await bot.process_update(update)
     return PlainTextResponse("ok")
 
+# Root endpoint (optional)
 @app.get("/")
 async def root():
     return {"message": "Bestie Bot is running!"}
 
-# --------------------------
-# Startup and Shutdown Events
-# --------------------------
-
+# Startup event: start bot & scheduler, set webhook
 @app.on_event("startup")
 async def startup_event():
     await bot.start()
@@ -295,15 +276,13 @@ async def startup_event():
         response = await client.post(set_webhook_url, data={"url": webhook_url})
         print("Webhook set response:", response.json())
 
+# Shutdown event: stop bot and scheduler
 @app.on_event("shutdown")
 async def shutdown_event():
     await bot.stop()
     scheduler.shutdown()
 
-# --------------------------
 # Run via uvicorn if executed directly
-# --------------------------
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
