@@ -1,5 +1,7 @@
 import os
 
-API_ID = 19300364
-API_HASH = "029cff3b7b2727f74ceb42ee080d83ee"
-BOT_TOKEN = "7576139470:AAHOXc9L9OG_ilYB7ofmQXhgXibhLURwXBA"
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+PORT = int(os.getenv("PORT", 10000))
