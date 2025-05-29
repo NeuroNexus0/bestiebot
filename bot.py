@@ -2,7 +2,7 @@
 import random
 import os
 from pyrogram import Client, filters
-from config import api_id, api_hash, bot_token
+from config import API_ID, API_HASH, BOT_TOKEN
 
 # Initialize bot client
 app = Client("bestie_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
