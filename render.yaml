@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: bestiebot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: API_ID
+        fromEnv: API_ID
+      - key: API_HASH
+        fromEnv: API_HASH
+      - key: BOT_TOKEN
+        fromEnv: BOT_TOKEN
+      - key: RENDER_EXTERNAL_URL
+        fromEnv: RENDER_EXTERNAL_URL
+
