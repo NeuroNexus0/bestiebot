@@ -5,3 +5,4 @@ TgCrypto==1.2.5
 uvicorn==0.29.0
 fastapi==0.111.0
 APScheduler==3.10.4
+Flask==3.0.2
