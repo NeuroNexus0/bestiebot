@@ -1,25 +1,16 @@
-<<<<<<< HEAD
-=======
-
->>>>>>> e36cd8e (UPDATE)
 import random
 import os
 from pyrogram import Client, filters
 from config import API_ID, API_HASH, BOT_TOKEN
-<<<<<<< HEAD
-
-# Initialize bot client
-app = Client("bestie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-=======
-import uvicorn
-from fastapi import FastAPI, Request
+from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime
+import pytz
 
 # Initialize bot client
 app = Client("bestie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# FastAPI server for Render
-server = FastAPI()
->>>>>>> e36cd8e (UPDATE)
+# Replace this with your bestie's user ID (you can get it using /id command)
+BESTIE_USER_ID = 5672706639
 
 # Quotes list
 quotes = [
@@ -29,19 +20,31 @@ quotes = [
     "Just a reminder: You’re amazing. No doubt. 💫"
 ]
 
+# Photo directory
 photo_folder = "photos"
-photo_files = [os.path.join(photo_folder, f) for f in os.listdir(photo_folder) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+photo_files = [
+    os.path.join(photo_folder, f)
+    for f in os.listdir(photo_folder)
+    if f.lower().endswith(('.jpg', '.jpeg', '.png'))
+]
 
+# Song directory
 song_folder = "songs"
-song_files = [os.path.join(song_folder, f) for f in os.listdir(song_folder) if f.lower().endswith(('.mp3', '.wav', '.m4a'))]
+song_files = [
+    os.path.join(song_folder, f)
+    for f in os.listdir(song_folder)
+    if f.lower().endswith(('.mp3', '.wav', '.m4a'))
+]
 
+# Commands
 @app.on_message(filters.command("start"))
 def start_handler(client, message):
     message.reply_text(
         "Hey Bestie! 💌\n\nI'm your special bot made with love.\nTry these commands:\n"
         "/quote – for a sweet message 💬\n"
         "/photo or /vibe – for a surprise picture 📸\n"
-        "/music – for a random vibe 🎶"
+        "/music – for a random vibe 🎶\n"
+        "/id – to get your user ID 🔍"
     )
 
 @app.on_message(filters.command("quote"))
@@ -62,26 +65,22 @@ def music_handler(client, message):
     else:
         message.reply_text("Oops, no songs found!")
 
-<<<<<<< HEAD
+@app.on_message(filters.command("id"))
+def id_handler(client, message):
+    message.reply_text(f"Your user ID is: `{message.from_user.id}`", quote=True)
+
+# Scheduler functions
+def send_good_morning():
+    app.send_message(BESTIE_USER_ID, "🌞 Good morning bestie! Hope your day is as lovely as you are 💖")
+
+def send_good_night():
+    app.send_message(BESTIE_USER_ID, "🌙 Good night bestie! Sweet dreams and peaceful rest 💫")
+
+# Start the scheduler
+scheduler = BackgroundScheduler(timezone=pytz.timezone("Asia/Kolkata"))
+scheduler.add_job(send_good_morning, trigger='cron', hour=7, minute=30)  # 7:30 AM IST
+scheduler.add_job(send_good_night, trigger='cron', hour=22, minute=0)    # 10:00 PM IST
+scheduler.start()
+
 # Run the bot
 app.run()
-=======
-# Start Pyrogram in webhook mode
-@server.on_event("startup")
-async def startup():
-    await app.start()
-    await app.set_webhook(url=os.environ["RENDER_EXTERNAL_URL"])
-
-@server.on_event("shutdown")
-async def shutdown():
-    await app.stop()
-
-@server.post("/")
-async def telegram_webhook(request: Request):
-    await app.process_update(await request.body())
-    return {"status": "ok"}
-
-if __name__ == "__main__":
-    uvicorn.run("bot:server", host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
->>>>>>> e36cd8e (UPDATE)
