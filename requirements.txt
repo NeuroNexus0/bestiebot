@@ -6,3 +6,4 @@ uvicorn==0.29.0
 fastapi==0.111.0
 APScheduler==3.10.4
 Flask==3.0.2
+httpx==0.24.0
