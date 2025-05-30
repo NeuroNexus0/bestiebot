@@ -117,7 +117,7 @@ async def handle_move(uid, idx):
 
 # --- Multiplayer Matching ---
 waiting_queue = []
-online_games = {}  # key: (X_id, O_id), value: board
+online_games = {}
 
 @bot.on_message(filters.command("onlinettt"))
 async def online_ttt_handler(client, msg):
@@ -156,13 +156,37 @@ async def multiplayer_move_handler(client, cq):
     if check_winner(board, turn):
         win_msg = f"{turn} wins!"
         del online_games[(x_id, o_id)]
-        await cq.message.edit_text(text + f"\n\n{win_msg}")
+        await bot.send_message(x_id, f"{text}\n\n{win_msg}")
+        await bot.send_message(o_id, f"{text}\n\n{win_msg}")
     elif is_board_full(board):
         del online_games[(x_id, o_id)]
-        await cq.message.edit_text(text + "\n\nDraw!")
+        await bot.send_message(x_id, f"{text}\n\nDraw!")
+        await bot.send_message(o_id, f"{text}\n\nDraw!")
     else:
-        await cq.message.edit_text(text, reply_markup=markup)
+        await bot.send_message(x_id, text, reply_markup=markup)
+        await bot.send_message(o_id, text, reply_markup=markup)
     await cq.answer()
+
+@bot.on_message(filters.command("say") & filters.private)
+async def chat_with_opponent(client, message):
+    user_id = message.from_user.id
+    opponent_id = None
+    for (x_id, o_id), board in online_games.items():
+        if user_id == x_id:
+            opponent_id = o_id
+            break
+        elif user_id == o_id:
+            opponent_id = x_id
+            break
+    if not opponent_id:
+        await message.reply("You're not in a multiplayer game right now!")
+        return
+    text = message.text.split(" ", 1)
+    if len(text) < 2:
+        await message.reply("Usage: /say your message")
+        return
+    await bot.send_message(opponent_id, f"🗨️ Message from your opponent:\n{text[1]}")
+    await message.reply("Message sent!")
 
 @bot.on_callback_query(filters.regex("noop"))
 async def noop_handler(client, cq):
@@ -189,7 +213,7 @@ async def ttt_cb(client, cq):
 async def start_handler(client, msg):
     await msg.reply_text(
         "Hey Bestie! 💌\n\nI'm your special bot made with love.\nCommands:\n"
-        "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n/id – your ID 🔍\n/ttt – play solo TTT 🎮\n/onlinettt – play with others 🌐"
+        "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n/id – your ID 🔍\n/ttt – play solo TTT 🎮\n/onlinettt – play with others 🌐\n/say – send chat to your opponent 💬"
     )
 
 @bot.on_message(filters.command("quote"))
