@@ -211,120 +211,65 @@ async def ttt_cb(client, cq):
 async def start_handler(client, msg):
     await msg.reply_text(
         "Hey Bestie! 💌\n\nI'm your special bot made with love.\nCommands:\n"
-        "/quote – sweet message\n"
-        "/photo – cute picture\n"
-        "/song – song for your mood\n"
-        "/ttt – play Tic Tac Toe singleplayer\n"
-        "/onlinettt – find a friend to play multiplayer Tic Tac Toe\n"
-        "/snl – play Snake and Ladder\n\n"
-        "Use buttons to interact!"
+        "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
+        "/id – your ID 🔍\n/ttt – play solo TTT 🎮\n/onlinettt – play with others 🌐"
     )
 
-# --- Quote Command ---
 @bot.on_message(filters.command("quote"))
 async def quote_handler(client, msg):
-    quote = random.choice(quotes)
-    await msg.reply_text(quote)
+    await msg.reply_text(random.choice(quotes))
 
-# --- Photo Command ---
-@bot.on_message(filters.command("photo"))
+@bot.on_message(filters.command(["photo", "vibe"]))
 async def photo_handler(client, msg):
-    photo_path = random.choice(photo_files)
-    await msg.reply_photo(photo=photo_path)
+    await msg.reply_photo(random.choice(photo_files) if photo_files else "No photos!")
 
-# --- Song Command ---
-@bot.on_message(filters.command("song"))
-async def song_handler(client, msg):
-    song_path = random.choice(song_files)
-    await msg.reply_audio(audio=song_path)
+@bot.on_message(filters.command("music"))
+async def music_handler(client, msg):
+    await msg.reply_audio(audio=random.choice(song_files), caption="Vibe 🎧") if song_files else await msg.reply_text("No songs!")
 
-# --- Snake and Ladder Game Setup ---
+@bot.on_message(filters.command("id"))
+async def id_handler(client, msg):
+    await msg.reply_text(f"Your user ID is: {msg.from_user.id}")
 
-# Board mapping: squares 1 to 100
-# Ladders and snakes mapped as start->end
-SNL_LADDERS = {
-    4: 14, 9: 31, 20: 38, 28: 84,
-    40: 59, 51: 67, 63: 81, 71: 91
-}
-SNL_SNAKES = {
-    17: 7, 54: 34, 62: 19, 64: 60,
-    87: 24, 93: 73, 95: 75, 99: 78
-}
+# --- Daily Messages ---
+async def send_good_morning():
+    await bot.send_message(BESTIE_USER_ID, "🌞 Good morning bestie! Hope your day is as lovely as you are 💖")
 
-snl_games = {}
+async def send_good_night():
+    await bot.send_message(BESTIE_USER_ID, "🌙 Good night bestie! Sweet dreams and peaceful rest 💫")
 
-def get_snl_position(pos):
-    if pos in SNL_LADDERS:
-        return SNL_LADDERS[pos], "Ladder! 🪜"
-    elif pos in SNL_SNAKES:
-        return SNL_SNAKES[pos], "Snake! 🐍"
-    else:
-        return pos, None
+scheduler.add_job(send_good_morning, 'cron', hour=7, minute=30)
+scheduler.add_job(send_good_night, 'cron', hour=22, minute=0)
 
-def snl_status_text(pos):
-    return f"You're on square {pos}."
-
-def build_snl_keyboard():
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Roll 🎲", callback_data="snl_roll")]]
-    )
-
-@bot.on_message(filters.command("snl"))
-async def snl_start(client, msg):
-    uid = msg.from_user.id
-    snl_games[uid] = 1
-    await msg.reply_text(
-        "Welcome to Snake and Ladder!\n\n" + snl_status_text(1),
-        reply_markup=build_snl_keyboard()
-    )
-
-@bot.on_callback_query(filters.regex("snl_roll"))
-async def snl_roll_handler(client, cq):
-    uid = cq.from_user.id
-    pos = snl_games.get(uid, 1)
-    roll = random.randint(1, 6)
-    new_pos = pos + roll
-    if new_pos > 100:
-        new_pos = pos  # can't move if goes beyond 100
-    msg = f"You rolled a {roll}.\n"
-    final_pos, special = get_snl_position(new_pos)
-    if special:
-        msg += f"{special}\n"
-    snl_games[uid] = final_pos
-    msg += snl_status_text(final_pos)
-
-    if final_pos == 100:
-        msg += "\n🎉 Congratulations! You reached 100 and won the game! 🎉"
-        del snl_games[uid]
-        await cq.message.edit_text(msg, reply_markup=None)
-    else:
-        await cq.message.edit_text(msg, reply_markup=build_snl_keyboard())
-    await cq.answer()
-
-# --- Webhook setup for FastAPI ---
+# --- FastAPI Webhook Routes ---
 @app.post(f"/{BOT_TOKEN}")
-async def bot_webhook(request: Request):
-    update = Update.de_json(await request.json())
+async def telegram_webhook(request: Request):
+    update_data = await request.json()
+    update = Update.de_json(update_data, bot)
     await bot.process_update(update)
     return PlainTextResponse("ok")
 
-# --- Start the scheduler to send daily messages ---
-async def daily_bestie_message():
-    quote = random.choice(quotes)
-    photo_path = random.choice(photo_files)
-    song_path = random.choice(song_files)
-    try:
-        await bot.send_photo(BESTIE_USER_ID, photo=photo_path, caption=quote)
-        await bot.send_audio(BESTIE_USER_ID, audio=song_path)
-    except Exception as e:
-        print("Error sending daily message:", e)
+@app.get("/")
+async def root():
+    return {"message": "Bestie Bot is running!"}
 
-scheduler.add_job(daily_bestie_message, "cron", hour=9, minute=0)
+# --- Startup & Shutdown Hooks ---
+@app.on_event("startup")
+async def startup_event():
+    await bot.start()
+    scheduler.start()
+    async with httpx.AsyncClient() as client:
+        await client.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
+            data={"url": f"{WEBHOOK_URL}/{BOT_TOKEN}"}
+        )
 
-# --- Run bot and scheduler ---
+@app.on_event("shutdown")
+async def shutdown_event():
+    await bot.stop()
+    scheduler.shutdown()
+
+# --- Uvicorn Entry Point ---
 if __name__ == "__main__":
     import uvicorn
-    scheduler.start()
-    bot.start()
     uvicorn.run(app, host="0.0.0.0", port=PORT)
-    bot.stop()
