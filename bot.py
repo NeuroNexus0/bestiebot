@@ -231,7 +231,7 @@ async def chat_button_handler(client, cq):
     chat_waiting_for_message.add(user_id)
     await cq.answer("Please send your message now.", show_alert=True)
 
-@bot.on_message(filters.private & ~filters.command)
+@bot.on_message(filters.private & ~filters.command())
 async def chat_message_forwarder(client, msg):
     user_id = msg.from_user.id
     if user_id not in chat_waiting_for_message:
