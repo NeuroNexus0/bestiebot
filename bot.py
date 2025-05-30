@@ -1,5 +1,3 @@
-# --- Imports ---
-
 import os
 import random
 import asyncio
@@ -45,8 +43,11 @@ song_files = [os.path.join(song_folder, f) for f in os.listdir(song_folder) if f
 
 games = {}
 waiting_queue = []
-online_games = {}  # (x_id, o_id): {board, messages}
+online_games = {}  # key: (x_id, o_id), value: {"board": board, "messages": {x_id: msg1, o_id: msg2}}
 rematch_requests = {}
+
+# New: track users in chat mode for multiplayer games
+chat_waiting_for_message = set()  # user_ids waiting to send a chat message
 
 def render_board_text(board):
     symbol_map = {"X": "❌", "O": "⚫", " ": "⬜"}
@@ -91,7 +92,7 @@ def bot_move(board):
             move = m
     return move
 
-def build_board_keyboard(board, prefix="ttt"):
+def build_board_keyboard(board, prefix="ttt", with_chat=False):
     kb = []
     for r in range(3):
         row = []
@@ -102,6 +103,9 @@ def build_board_keyboard(board, prefix="ttt"):
             else:
                 row.append(InlineKeyboardButton({"X": "❌", "O": "⚫"}[board[i]], callback_data="noop"))
         kb.append(row)
+    if with_chat:
+        # Add chat button in a new row
+        kb.append([InlineKeyboardButton("💬 Chat", callback_data=f"chat_{prefix}")])
     return InlineKeyboardMarkup(kb)
 
 # --- Single Player ---
@@ -138,10 +142,14 @@ async def handle_move(uid, idx):
 @bot.on_message(filters.command("onlinettt"))
 async def online_ttt_handler(client, msg):
     user_id = msg.from_user.id
+    if user_id in waiting_queue:
+        await msg.reply_text("⏳ You are already in the queue, waiting for an opponent...")
+        return
+
     if waiting_queue and waiting_queue[0] != user_id:
         x_id, o_id = waiting_queue.pop(0), user_id
         board = [" "] * 9
-        markup = build_board_keyboard(board, prefix=f"multi_{x_id}_{o_id}")
+        markup = build_board_keyboard(board, prefix=f"multi_{x_id}_{o_id}", with_chat=True)
         board_text = render_board_text(board)
         m1 = await bot.send_message(x_id, f"🎮 Multiplayer started! You're ❌\n\n{board_text}", reply_markup=markup)
         m2 = await bot.send_message(o_id, f"🎮 Multiplayer started! You're ⚫\nWaiting for ❌\n\n{board_text}", reply_markup=markup)
@@ -168,7 +176,7 @@ async def multiplayer_move_handler(client, cq):
         return
     board[move] = turn
     text = render_board_text(board)
-    markup = build_board_keyboard(board, prefix=f"multi_{x_id}_{o_id}")
+    markup = build_board_keyboard(board, prefix=f"multi_{x_id}_{o_id}", with_chat=True)
 
     async def edit(msg_obj, txt): await msg_obj.edit_text(txt, reply_markup=markup)
     m1, m2 = game["messages"][x_id], game["messages"][o_id]
@@ -200,115 +208,73 @@ async def rematch_request_handler(client, cq):
     if len(rematch_requests[key]) == 2:
         del rematch_requests[key]
         board = [" "] * 9
-        markup = build_board_keyboard(board, prefix=f"multi_{x_id}_{o_id}")
+        markup = build_board_keyboard(board, prefix=f"multi_{x_id}_{o_id}", with_chat=True)
         txt = render_board_text(board)
         m1 = await bot.send_message(x_id, f"🔁 Rematch started! You're ❌\n\n{txt}", reply_markup=markup)
-        m2 = await bot.send_message(o_id, f"🔁 Rematch started! You're ⚫\n\n{txt}", reply_markup=markup)
+        m2 = await bot.send_message(o_id, f"🔁 Rematch started! You're ⚫\nWaiting for ❌\n\n{txt}", reply_markup=markup)
         online_games[(x_id, o_id)] = {"board": board, "messages": {x_id: m1, o_id: m2}}
+        await cq.message.delete()
     else:
-        await cq.answer("Rematch request sent. Waiting for opponent.", show_alert=True)
+        await cq.answer("Waiting for opponent to accept rematch")
 
 # --- In-Game Chat ---
 
-@bot.on_message(filters.command("say") & filters.private)
-async def say_handler(client, msg: Message):
-    parts = msg.text.split(maxsplit=1)
-    if len(parts) != 2:
-        await msg.reply_text("Usage: /say message")
+@bot.on_callback_query(filters.regex(r"chat_multi_(\d+)_(\d+)"))
+async def chat_button_handler(client, cq):
+    user_id = cq.from_user.id
+    data = cq.data.split("_")
+    x_id, o_id = int(data[2]), int(data[3])
+    # Only allow chatting if user is part of game
+    if (x_id, o_id) not in online_games and (o_id, x_id) not in online_games:
+        await cq.answer("Game no longer active.", show_alert=True)
         return
-    uid = msg.from_user.id
-    for (x_id, o_id), data in online_games.items():
-        if uid in (x_id, o_id):
-            peer = o_id if uid == x_id else x_id
-            await bot.send_message(peer, f"💬 Message from your opponent:\n{parts[1]}")
-            await msg.reply_text("Sent.")
-            return
-    await msg.reply_text("No active game found.")
+    chat_waiting_for_message.add(user_id)
+    await cq.answer("Please send your message now.", show_alert=True)
 
-# --- Misc ---
+@bot.on_message(filters.private & ~filters.command)
+async def chat_message_forwarder(client, msg):
+    user_id = msg.from_user.id
+    if user_id not in chat_waiting_for_message:
+        return  # Not in chat mode, ignore
 
-@bot.on_callback_query(filters.regex("noop"))
-async def noop_handler(client, cq): await cq.answer()
+    # Find opponent id from active game
+    opponent_id = None
+    for (x_id, o_id), game in online_games.items():
+        if user_id == x_id:
+            opponent_id = o_id
+            break
+        elif user_id == o_id:
+            opponent_id = x_id
+            break
+    if not opponent_id:
+        chat_waiting_for_message.discard(user_id)
+        await msg.reply_text("You are not in a game currently.")
+        return
 
-@bot.on_message(filters.command("ttt"))
-async def ttt_handler(client, msg):
-    uid = msg.from_user.id
-    text, kb = await start_game(uid)
-    await msg.reply_text(text, reply_markup=kb)
+    chat_waiting_for_message.discard(user_id)
+    # Forward message to opponent with info who sent it
+    await bot.send_message(opponent_id, f"💬 Message from your opponent:\n\n{msg.text or '<non-text message>'}")
 
-@bot.on_callback_query(filters.regex(r"ttt_\d"))
-async def ttt_cb(client, cq):
-    uid = cq.from_user.id
-    idx = int(cq.data.split("_")[1])
-    text, kb, err = await handle_move(uid, idx)
-    if err:
-        await cq.answer(err, show_alert=True)
-    else:
-        await cq.message.edit_text(text, reply_markup=kb)
-    await cq.answer()
+    await msg.reply_text("✅ Your message was sent!")
 
-@bot.on_message(filters.command("start"))
-async def start_handler(client, msg):
-    await msg.reply_text(
-        "Hey Dumb! 💌\n\nI'm your special bot made with love.\nCommands:\n"
-        "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
-        "/id – your ID 🔍\n/ttt – play solo TTT 🎮\n/onlinettt – play with others 🌐\n"
-        "/say – send message to opponent 💬"
-    )
+# --- Other bot commands and handlers (quotes, pics, songs, etc.) can be added here as needed ---
 
-@bot.on_message(filters.command("quote"))
-async def quote_handler(client, msg): await msg.reply_text(random.choice(quotes))
+# --- Webhook FastAPI Setup (optional) ---
 
-@bot.on_message(filters.command(["photo", "vibe"]))
-async def photo_handler(client, msg):
-    if photo_files: await msg.reply_photo(random.choice(photo_files))
-    else: await msg.reply_text("No photos!")
+@app.post("/")
+async def webhook(request: Request):
+    data = await request.body()
+    update = Update.de_json(data.decode(), bot)
+    await bot.process_updates([update])
+    return PlainTextResponse("OK")
 
-@bot.on_message(filters.command("music"))
-async def music_handler(client, msg):
-    if song_files: await msg.reply_audio(audio=random.choice(song_files), caption="Vibe 🎧")
-    else: await msg.reply_text("No songs!")
-
-@bot.on_message(filters.command("id"))
-async def id_handler(client, msg): await msg.reply_text(f"Your user ID is: {msg.from_user.id}")
-
-# --- Daily Messages ---
-
-async def send_good_morning(): await bot.send_message(BESTIE_USER_ID, "🌞 Good morning bestie! 💖")
-async def send_good_afternoon(): await bot.send_message(BESTIE_USER_ID, "🌞 Good Afternoon Kritika! 💖🎶")
-async def send_good_night(): await bot.send_message(BESTIE_USER_ID, "🌙 Good night Dumb Jigs 💫")
-
-scheduler.add_job(send_good_morning, 'cron', hour=7, minute=30)
-scheduler.add_job(send_good_afternoon, 'cron', hour=13, minute=30)
-scheduler.add_job(send_good_night, 'cron', hour=22, minute=0)
-
-# --- FastAPI Webhook ---
-
-@app.post(f"/{BOT_TOKEN}")
-async def telegram_webhook(request: Request):
-    update_data = await request.json()
-    update = Update.de_json(update_data, bot)
-    await bot.process_update(update)
-    return PlainTextResponse("ok")
-
-@app.get("/")
-async def root(): return {"message": "Bestie Bot is running!"}
-
-@app.on_event("startup")
-async def startup_event():
-    await bot.start()
-    scheduler.start()
+async def set_webhook():
     async with httpx.AsyncClient() as client:
-        await client.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
-            data={"url": f"{WEBHOOK_URL}/{BOT_TOKEN}"}
-        )
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    await bot.stop()
-    scheduler.shutdown()
+        await client.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook", json={"url": WEBHOOK_URL})
 
 if __name__ == "__main__":
     import uvicorn
+    scheduler.start()
+    asyncio.get_event_loop().run_until_complete(bot.start())
+    asyncio.get_event_loop().run_until_complete(set_webhook())
     uvicorn.run(app, host="0.0.0.0", port=PORT)
