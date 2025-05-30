@@ -210,7 +210,7 @@ async def ttt_cb(client, cq):
 @bot.on_message(filters.command("start"))
 async def start_handler(client, msg):
     await msg.reply_text(
-        "Hey Bestie! 💌\n\nI'm your special bot made with love.\nCommands:\n"
+        "Hey Dumb! 💌\n\nI'm your special bot made with love.\nCommands:\n"
         "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
         "/id – your ID 🔍\n/ttt – play solo TTT 🎮\n/onlinettt – play with others 🌐"
     )
@@ -235,10 +235,14 @@ async def id_handler(client, msg):
 async def send_good_morning():
     await bot.send_message(BESTIE_USER_ID, "🌞 Good morning bestie! Hope your day is as lovely as you are 💖")
 
+async def send_good_afternoon():
+    await bot.send_message(BESTIE_USER_ID, "🌞 Good AfterNoon Kritika! Remember You are the Best💖🎶😎")
+
 async def send_good_night():
-    await bot.send_message(BESTIE_USER_ID, "🌙 Good night bestie! Sweet dreams and peaceful rest 💫")
+    await bot.send_message(BESTIE_USER_ID, "🌙 Good night Dumb! You are always my Dumb Jigs 💫")
 
 scheduler.add_job(send_good_morning, 'cron', hour=7, minute=30)
+scheduler.add_job(send_good_afternoon, 'cron', hour=13, minute=30)
 scheduler.add_job(send_good_night, 'cron', hour=22, minute=0)
 
 # --- FastAPI Webhook Routes ---
