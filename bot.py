@@ -24,7 +24,7 @@ bot = Client("bestie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 app = FastAPI()
 scheduler = AsyncIOScheduler(timezone=pytz.timezone("Asia/Kolkata"))
 
-BESTIE_USER_ID = 5672706639
+BESTIE_USER_ID = 7590978422
 
 # --- Content Pools ---
 
@@ -34,6 +34,13 @@ quotes = [
     "You're the kindest soul I've ever met 💖",
     "Just a reminder: You're amazing. No doubt. 💫"
 ]
+
+# --- Customizable Greetings ---
+greetings = {
+    "morning": "🌞 Good morning bestie have a nice day! 💖",
+    "afternoon": "🌞 Good Afternoon Kritika Eat well! 💖🎶",
+    "night": "🌙 Good night Dumb Jigs I Like u the most 💫"
+}
 
 photo_folder = "photos"
 photo_files = [os.path.join(photo_folder, f) for f in os.listdir(photo_folder) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
@@ -253,6 +260,61 @@ async def say_handler(client, msg: Message):
             return
     await msg.reply_text("No active game found.")
 
+# --- Greeting Management Commands (Only for BESTIE_USER_ID) ---
+
+@bot.on_message(filters.command("setmorning") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+async def set_morning_handler(client, msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) != 2:
+        await msg.reply_text("Usage: /setmorning Your new morning message")
+        return
+    greetings["morning"] = parts[1]
+    await msg.reply_text(f"✅ Morning greeting updated to:\n{parts[1]}")
+
+@bot.on_message(filters.command("setafternoon") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+async def set_afternoon_handler(client, msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) != 2:
+        await msg.reply_text("Usage: /setafternoon Your new afternoon message")
+        return
+    greetings["afternoon"] = parts[1]
+    await msg.reply_text(f"✅ Afternoon greeting updated to:\n{parts[1]}")
+
+@bot.on_message(filters.command("setnight") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+async def set_night_handler(client, msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) != 2:
+        await msg.reply_text("Usage: /setnight Your new night message")
+        return
+    greetings["night"] = parts[1]
+    await msg.reply_text(f"✅ Night greeting updated to:\n{parts[1]}")
+
+@bot.on_message(filters.command("viewgreetings") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+async def view_greetings_handler(client, msg: Message):
+    greeting_text = "🌟 Current Greetings:\n\n"
+    greeting_text += f"🌅 Morning: {greetings['morning']}\n\n"
+    greeting_text += f"🌞 Afternoon: {greetings['afternoon']}\n\n"
+    greeting_text += f"🌙 Night: {greetings['night']}\n\n"
+    greeting_text += "Use /setmorning, /setafternoon, or /setnight to change them."
+    await msg.reply_text(greeting_text)
+
+@bot.on_message(filters.command("resetgreetings") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+async def reset_greetings_handler(client, msg: Message):
+    greetings["morning"] = "🌞 Good morning bestie have a nice day! 💖"
+    greetings["afternoon"] = "🌞 Good Afternoon Kritika Eat well! 💖🎶"
+    greetings["night"] = "🌙 Good night Dumb Jigs I Like u the most 💫"
+    await msg.reply_text("✅ All greetings have been reset to default!")
+
+@bot.on_message(filters.command("testgreetings") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+async def test_greetings_handler(client, msg: Message):
+    await msg.reply_text("🧪 Testing all greetings:")
+    await asyncio.sleep(1)
+    await msg.reply_text(f"Morning: {greetings['morning']}")
+    await asyncio.sleep(1)
+    await msg.reply_text(f"Afternoon: {greetings['afternoon']}")
+    await asyncio.sleep(1)
+    await msg.reply_text(f"Night: {greetings['night']}")
+
 # --- Misc ---
 
 @bot.on_callback_query(filters.regex("noop"))
@@ -277,12 +339,26 @@ async def ttt_cb(client, cq):
 
 @bot.on_message(filters.command("start"))
 async def start_handler(client, msg):
-    await msg.reply_text(
+    base_text = (
         "Hey Dumb! 💌\n\nI'm your special bot made with love.\nCommands:\n"
         "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
         "/id – your ID 🔍\n/ttt – play solo TTT 🎮\n/onlinettt – play with others 🌐\n"
         "/cancelqueue – leave matchmaking queue ❌\n/say – send message to opponent 💬"
     )
+    
+    # Add greeting management commands only for authorized users
+    if msg.from_user.id in [BESTIE_USER_ID, MY_USER_ID]:
+        base_text += (
+            "\n\n🔧 Greeting Management (Your commands only):\n"
+            "/viewgreetings – see current greetings 👀\n"
+            "/setmorning – change morning message 🌅\n"
+            "/setafternoon – change afternoon message 🌞\n"
+            "/setnight – change night message 🌙\n"
+            "/resetgreetings – reset to defaults 🔄\n"
+            "/testgreetings – test all greetings 🧪"
+        )
+    
+    await msg.reply_text(base_text)
 
 @bot.on_message(filters.command("quote"))
 async def quote_handler(client, msg): await msg.reply_text(random.choice(quotes))
@@ -302,9 +378,14 @@ async def id_handler(client, msg): await msg.reply_text(f"Your user ID is: {msg.
 
 # --- Daily Messages ---
 
-async def send_good_morning(): await bot.send_message(BESTIE_USER_ID, "🌞 Good morning bestie have a nice day! 💖")
-async def send_good_afternoon(): await bot.send_message(BESTIE_USER_ID, "🌞 Good Afternoon Kritika Eat well! 💖🎶")
-async def send_good_night(): await bot.send_message(BESTIE_USER_ID, "🌙 Good night Dumb Jigs I Like u the most 💫")
+async def send_good_morning(): 
+    await bot.send_message(BESTIE_USER_ID, greetings["morning"])
+
+async def send_good_afternoon(): 
+    await bot.send_message(BESTIE_USER_ID, greetings["afternoon"])
+
+async def send_good_night(): 
+    await bot.send_message(BESTIE_USER_ID, greetings["night"])
 
 scheduler.add_job(send_good_morning, 'cron', hour=7, minute=30)
 scheduler.add_job(send_good_afternoon, 'cron', hour=13, minute=30)
