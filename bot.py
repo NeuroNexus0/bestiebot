@@ -1,26 +1,32 @@
+# --- Imports ---
 import os
 import random
+import asyncio
+import pytz
+import httpx
+
 from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Update
 from fastapi import FastAPI, Request
 from starlette.responses import PlainTextResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import pytz
-import httpx
-import asyncio
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# Load environment variables
+# --- Environment Setup ---
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
 
+# --- Initialize Pyrogram Client, FastAPI App, and Scheduler ---
 bot = Client("bestie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 app = FastAPI()
 scheduler = AsyncIOScheduler(timezone=pytz.timezone("Asia/Kolkata"))
+
+# --- Target User for Scheduled Messages ---
 BESTIE_USER_ID = 5672706639
 
+# --- Predefined Content ---
 quotes = [
     "You're not just a star, you're my whole sky. ✨",
     "Your smile makes my day every time 😊",
@@ -34,7 +40,7 @@ photo_files = [os.path.join(photo_folder, f) for f in os.listdir(photo_folder) i
 song_folder = "songs"
 song_files = [os.path.join(song_folder, f) for f in os.listdir(song_folder) if f.lower().endswith(('.mp3', '.wav', '.m4a'))]
 
-# --- TTT Single Player ---
+# --- Single Player Tic Tac Toe Logic ---
 games = {}
 
 def render_board_text(board):
@@ -56,10 +62,11 @@ def minimax(board, depth, is_max):
     if check_winner(board, "O"): return 10 - depth
     if check_winner(board, "X"): return depth - 10
     if is_board_full(board): return 0
+
     scores = []
     for move in get_available_moves(board):
         board[move] = "O" if is_max else "X"
-        score = minimax(board, depth+1, not is_max)
+        score = minimax(board, depth + 1, not is_max)
         board[move] = " "
         scores.append(score)
     return max(scores) if is_max else min(scores)
@@ -83,7 +90,7 @@ def build_board_keyboard(board, prefix="ttt"):
         for c in range(3):
             i = r * 3 + c
             if board[i] == " ":
-                row.append(InlineKeyboardButton(str(i+1), callback_data=f"{prefix}_{i}"))
+                row.append(InlineKeyboardButton(str(i + 1), callback_data=f"{prefix}_{i}"))
             else:
                 row.append(InlineKeyboardButton({"X": "❌", "O": "⚫"}[board[i]], callback_data="noop"))
         kb.append(row)
@@ -98,21 +105,26 @@ async def handle_move(uid, idx):
     board = games.get(uid)
     if not board or board[idx] != " ":
         return None, None, "Invalid or no game."
+
     board[idx] = "X"
     if check_winner(board, "X"):
         del games[uid]
         return render_board_text(board) + "\n\nYou won! 🎉", None, None
+
     if is_board_full(board):
         del games[uid]
         return render_board_text(board) + "\n\nDraw!", None, None
+
     bot_idx = bot_move(board)
-    if bot_idx is not None: board[bot_idx] = "O"
-    if check_winner(board, "O"):
-        del games[uid]
-        return render_board_text(board) + "\n\nI won! 😎", None, None
-    if is_board_full(board):
-        del games[uid]
-        return render_board_text(board) + "\n\nDraw!", None, None
+    if bot_idx is not None:
+        board[bot_idx] = "O"
+        if check_winner(board, "O"):
+            del games[uid]
+            return render_board_text(board) + "\n\nI won! 😎", None, None
+        if is_board_full(board):
+            del games[uid]
+            return render_board_text(board) + "\n\nDraw!", None, None
+
     return "Your turn! You're ❌ (X).\n\n" + render_board_text(board), build_board_keyboard(board), None
 
 # --- Multiplayer Matching ---
@@ -127,37 +139,41 @@ async def online_ttt_handler(client, msg):
         x_id, o_id = opponent["user_id"], user_id
         board = [" "] * 9
         online_games[(x_id, o_id)] = board
-        board_text = render_board_text(board)
         markup = build_board_keyboard(board, prefix=f"multi_{x_id}_{o_id}")
+        board_text = render_board_text(board)
         await bot.send_message(x_id, f"🎮 Multiplayer game started! You're ❌\n\n{board_text}", reply_markup=markup)
         await bot.send_message(o_id, f"🎮 Multiplayer game started! You're ⚫\nWaiting for ❌\n\n{board_text}", reply_markup=markup)
     else:
         waiting_queue.append({"user_id": user_id})
         await msg.reply_text("⏳ You're added to the queue. Waiting for another player...")
 
-@bot.on_callback_query(filters.regex(r"multi_(\d+)_(\d+)_([0-8])"))
+@bot.on_callback_query(filters.regex(r"multi_(\d+)_(\d+)_(\d)"))
 async def multiplayer_move_handler(client, cq):
     x_id, o_id, move = map(int, cq.data.split("_")[1:])
     board = online_games.get((x_id, o_id))
     uid = cq.from_user.id
+
     if not board:
         await cq.answer("Game not found", show_alert=True)
         return
+
     turn = "X" if board.count("X") <= board.count("O") else "O"
     if (turn == "X" and uid != x_id) or (turn == "O" and uid != o_id):
         await cq.answer("Not your turn", show_alert=True)
         return
+
     if board[move] != " ":
         await cq.answer("Invalid move", show_alert=True)
         return
+
     board[move] = turn
     text = render_board_text(board)
     markup = build_board_keyboard(board, prefix=f"multi_{x_id}_{o_id}")
+
     if check_winner(board, turn):
-        win_msg = f"{turn} wins!"
         del online_games[(x_id, o_id)]
-        await bot.send_message(x_id, f"{text}\n\n{win_msg}")
-        await bot.send_message(o_id, f"{text}\n\n{win_msg}")
+        await bot.send_message(x_id, f"{text}\n\n{turn} wins!")
+        await bot.send_message(o_id, f"{text}\n\n{turn} wins!")
     elif is_board_full(board):
         del online_games[(x_id, o_id)]
         await bot.send_message(x_id, f"{text}\n\nDraw!")
@@ -165,29 +181,10 @@ async def multiplayer_move_handler(client, cq):
     else:
         await bot.send_message(x_id, text, reply_markup=markup)
         await bot.send_message(o_id, text, reply_markup=markup)
+
     await cq.answer()
 
-@bot.on_message(filters.command("say") & filters.private)
-async def chat_with_opponent(client, message):
-    user_id = message.from_user.id
-    opponent_id = None
-    for (x_id, o_id), board in online_games.items():
-        if user_id == x_id:
-            opponent_id = o_id
-            break
-        elif user_id == o_id:
-            opponent_id = x_id
-            break
-    if not opponent_id:
-        await message.reply("You're not in a multiplayer game right now!")
-        return
-    text = message.text.split(" ", 1)
-    if len(text) < 2:
-        await message.reply("Usage: /say your message")
-        return
-    await bot.send_message(opponent_id, f"🗨️ Message from your opponent:\n{text[1]}")
-    await message.reply("Message sent!")
-
+# --- Misc Commands ---
 @bot.on_callback_query(filters.regex("noop"))
 async def noop_handler(client, cq):
     await cq.answer()
@@ -213,7 +210,8 @@ async def ttt_cb(client, cq):
 async def start_handler(client, msg):
     await msg.reply_text(
         "Hey Bestie! 💌\n\nI'm your special bot made with love.\nCommands:\n"
-        "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n/id – your ID 🔍\n/ttt – play solo TTT 🎮\n/onlinettt – play with others 🌐\n/say – send chat to your opponent 💬"
+        "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
+        "/id – your ID 🔍\n/ttt – play solo TTT 🎮\n/onlinettt – play with others 🌐"
     )
 
 @bot.on_message(filters.command("quote"))
@@ -230,8 +228,9 @@ async def music_handler(client, msg):
 
 @bot.on_message(filters.command("id"))
 async def id_handler(client, msg):
-    await msg.reply_text(f"Your user ID is: `{msg.from_user.id}`")
+    await msg.reply_text(f"Your user ID is: {msg.from_user.id}")
 
+# --- Scheduled Messages ---
 async def send_good_morning():
     await bot.send_message(BESTIE_USER_ID, "🌞 Good morning bestie! Hope your day is as lovely as you are 💖")
 
@@ -241,9 +240,11 @@ async def send_good_night():
 scheduler.add_job(send_good_morning, 'cron', hour=7, minute=30)
 scheduler.add_job(send_good_night, 'cron', hour=22, minute=0)
 
+# --- FastAPI Webhook Endpoint ---
 @app.post(f"/{BOT_TOKEN}")
 async def telegram_webhook(request: Request):
-    update = await request.json()
+    update_data = await request.json()
+    update = Update.de_json(update_data, bot)
     await bot.process_update(update)
     return PlainTextResponse("ok")
 
@@ -251,18 +252,23 @@ async def telegram_webhook(request: Request):
 async def root():
     return {"message": "Bestie Bot is running!"}
 
+# --- Lifecycle Hooks ---
 @app.on_event("startup")
 async def startup_event():
     await bot.start()
     scheduler.start()
     async with httpx.AsyncClient() as client:
-        await client.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook", data={"url": f"{WEBHOOK_URL}/{BOT_TOKEN}"})
+        await client.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
+            data={"url": f"{WEBHOOK_URL}/{BOT_TOKEN}"}
+        )
 
 @app.on_event("shutdown")
 async def shutdown_event():
     await bot.stop()
     scheduler.shutdown()
 
+# --- Uvicorn Entry Point ---
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
