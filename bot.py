@@ -274,9 +274,9 @@ async def id_handler(client, msg): await msg.reply_text(f"Your user ID is: {msg.
 
 # --- Daily Messages ---
 
-async def send_good_morning(): await bot.send_message(BESTIE_USER_ID, "🌞 Good morning bestie! 💖")
-async def send_good_afternoon(): await bot.send_message(BESTIE_USER_ID, "🌞 Good Afternoon Kritika! 💖🎶")
-async def send_good_night(): await bot.send_message(BESTIE_USER_ID, "🌙 Good night Dumb Jigs 💫")
+async def send_good_morning(): await bot.send_message(BESTIE_USER_ID, "🌞 Good morning bestie have a nice day! 💖")
+async def send_good_afternoon(): await bot.send_message(BESTIE_USER_ID, "🌞 Good Afternoon Kritika Eat well! 💖🎶")
+async def send_good_night(): await bot.send_message(BESTIE_USER_ID, "🌙 Good night Dumb Jigs I Like u the most 💫")
 
 scheduler.add_job(send_good_morning, 'cron', hour=7, minute=30)
 scheduler.add_job(send_good_afternoon, 'cron', hour=13, minute=30)
