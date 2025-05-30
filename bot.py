@@ -24,8 +24,9 @@ bot = Client("bestie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 app = FastAPI()
 scheduler = AsyncIOScheduler(timezone=pytz.timezone("Asia/Kolkata"))
 
-BESTIE_USER_ID = 7590978422
+BESTIE_USER_ID = 5672706639
 
+MY_USER_ID = 7590978422
 # --- Content Pools ---
 
 quotes = [
