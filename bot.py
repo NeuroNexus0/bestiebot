@@ -18,15 +18,15 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
 
-# --- Initialize Pyrogram Client, FastAPI App, and Scheduler ---
+# --- Initialize bot, web app and scheduler ---
 bot = Client("bestie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 app = FastAPI()
 scheduler = AsyncIOScheduler(timezone=pytz.timezone("Asia/Kolkata"))
 
-# --- Target User for Scheduled Messages ---
+# --- User ID for daily bestie messages ---
 BESTIE_USER_ID = 5672706639
 
-# --- Predefined Content ---
+# --- Content pools ---
 quotes = [
     "You're not just a star, you're my whole sky. ✨",
     "Your smile makes my day every time 😊",
@@ -40,7 +40,7 @@ photo_files = [os.path.join(photo_folder, f) for f in os.listdir(photo_folder) i
 song_folder = "songs"
 song_files = [os.path.join(song_folder, f) for f in os.listdir(song_folder) if f.lower().endswith(('.mp3', '.wav', '.m4a'))]
 
-# --- Single Player Tic Tac Toe Logic ---
+# --- Single Player Game Logic ---
 games = {}
 
 def render_board_text(board):
@@ -58,6 +58,7 @@ def is_board_full(board):
 def get_available_moves(board):
     return [i for i, v in enumerate(board) if v == " "]
 
+# Minimax algorithm for unbeatable bot
 def minimax(board, depth, is_max):
     if check_winner(board, "O"): return 10 - depth
     if check_winner(board, "X"): return depth - 10
@@ -105,7 +106,7 @@ async def handle_move(uid, idx):
     board = games.get(uid)
     if not board or board[idx] != " ":
         return None, None, "Invalid or no game."
-
+    
     board[idx] = "X"
     if check_winner(board, "X"):
         del games[uid]
@@ -127,7 +128,7 @@ async def handle_move(uid, idx):
 
     return "Your turn! You're ❌ (X).\n\n" + render_board_text(board), build_board_keyboard(board), None
 
-# --- Multiplayer Matching ---
+# --- Multiplayer Logic ---
 waiting_queue = []
 online_games = {}
 
@@ -230,7 +231,7 @@ async def music_handler(client, msg):
 async def id_handler(client, msg):
     await msg.reply_text(f"Your user ID is: {msg.from_user.id}")
 
-# --- Scheduled Messages ---
+# --- Daily Messages ---
 async def send_good_morning():
     await bot.send_message(BESTIE_USER_ID, "🌞 Good morning bestie! Hope your day is as lovely as you are 💖")
 
@@ -240,7 +241,7 @@ async def send_good_night():
 scheduler.add_job(send_good_morning, 'cron', hour=7, minute=30)
 scheduler.add_job(send_good_night, 'cron', hour=22, minute=0)
 
-# --- FastAPI Webhook Endpoint ---
+# --- FastAPI Webhook Routes ---
 @app.post(f"/{BOT_TOKEN}")
 async def telegram_webhook(request: Request):
     update_data = await request.json()
@@ -252,7 +253,7 @@ async def telegram_webhook(request: Request):
 async def root():
     return {"message": "Bestie Bot is running!"}
 
-# --- Lifecycle Hooks ---
+# --- Startup & Shutdown Hooks ---
 @app.on_event("startup")
 async def startup_event():
     await bot.start()
