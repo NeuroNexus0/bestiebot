@@ -31,8 +31,8 @@ BESTIE_USER_ID = 5672706639
 quotes = [
     "You're not just a star, you're my whole sky. ✨",
     "Your smile makes my day every time 😊",
-    "You're the kindest soul I’ve ever met 💖",
-    "Just a reminder: You’re amazing. No doubt. 💫"
+    "You're the kindest soul I've ever met 💖",
+    "Just a reminder: You're amazing. No doubt. 💫"
 ]
 
 photo_folder = "photos"
@@ -138,6 +138,12 @@ async def handle_move(uid, idx):
 @bot.on_message(filters.command("onlinettt"))
 async def online_ttt_handler(client, msg):
     user_id = msg.from_user.id
+    
+    # Check if user is already in queue
+    if user_id in waiting_queue:
+        await msg.reply_text("❌ You're already in the queue! Use /cancelqueue to leave.")
+        return
+    
     if waiting_queue and waiting_queue[0] != user_id:
         x_id, o_id = waiting_queue.pop(0), user_id
         board = [" "] * 9
@@ -148,7 +154,29 @@ async def online_ttt_handler(client, msg):
         online_games[(x_id, o_id)] = {"board": board, "messages": {x_id: m1, o_id: m2}}
     else:
         waiting_queue.append(user_id)
-        await msg.reply_text("⏳ You're in the queue. Waiting for an opponent...")
+        cancel_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel Queue", callback_data="cancel_queue")]
+        ])
+        await msg.reply_text("⏳ You're in the queue. Waiting for an opponent...\nUse /cancelqueue or the button below to leave the queue.", reply_markup=cancel_markup)
+
+@bot.on_message(filters.command("cancelqueue"))
+async def cancel_queue_handler(client, msg):
+    user_id = msg.from_user.id
+    if user_id in waiting_queue:
+        waiting_queue.remove(user_id)
+        await msg.reply_text("✅ You've been removed from the queue.")
+    else:
+        await msg.reply_text("❌ You're not in the queue.")
+
+@bot.on_callback_query(filters.regex("cancel_queue"))
+async def cancel_queue_callback_handler(client, cq):
+    user_id = cq.from_user.id
+    if user_id in waiting_queue:
+        waiting_queue.remove(user_id)
+        await cq.message.edit_text("✅ You've been removed from the queue.")
+    else:
+        await cq.answer("You're not in the queue.", show_alert=True)
+    await cq.answer()
 
 @bot.on_callback_query(filters.regex(r"multi_(\d+)_(\d+)_(\d+)"))
 async def multiplayer_move_handler(client, cq):
@@ -253,7 +281,7 @@ async def start_handler(client, msg):
         "Hey Dumb! 💌\n\nI'm your special bot made with love.\nCommands:\n"
         "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
         "/id – your ID 🔍\n/ttt – play solo TTT 🎮\n/onlinettt – play with others 🌐\n"
-        "/say – send message to opponent 💬"
+        "/cancelqueue – leave matchmaking queue ❌\n/say – send message to opponent 💬"
     )
 
 @bot.on_message(filters.command("quote"))
