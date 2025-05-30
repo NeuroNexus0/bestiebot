@@ -1,7 +1,6 @@
 import os
 import random
 import asyncio
-import time
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Update
 from fastapi import FastAPI, Request
@@ -26,8 +25,8 @@ app = FastAPI()
 # APScheduler setup
 scheduler = AsyncIOScheduler(timezone=pytz.timezone("Asia/Kolkata"))
 
-# Bestie user
-BESTIE_USER_ID = 5672706639  # Change to your user ID
+# Bestie user (change this to your user ID for daily messages)
+BESTIE_USER_ID = 5672706639
 
 # Quote, photo, and music data
 quotes = [
@@ -43,9 +42,22 @@ photo_files = [os.path.join(photo_folder, f) for f in os.listdir(photo_folder) i
 song_folder = "songs"
 song_files = [os.path.join(song_folder, f) for f in os.listdir(song_folder) if f.lower().endswith(('.mp3', '.wav', '.m4a'))]
 
-# --- Tic Tac Toe single player logic ---
+# --- Tic Tac Toe logic ---
 
-games = {}
+# Single-player games (user_id -> board)
+single_games = {}
+
+# Online multiplayer games (chat_id -> game data)
+# Game data: {
+#   "players": [user_id1, user_id2],
+#   "board": [...],
+#   "turn": 0 or 1 (index of current player),
+#   "message_id": int
+# }
+multi_games = {}
+
+# Waiting queue for multiplayer matchmaking (list of user_ids)
+waiting_queue = []
 
 def render_board_text(board):
     symbols = {"X": "❌", "O": "⚫", " ": "⬜"}
@@ -102,28 +114,45 @@ def bot_move(board):
             move = m
     return move
 
-def build_board_keyboard(board, online=False, user_id=None):
+def build_board_keyboard(board, prefix="ttt_single"):
     kb = []
     for row in range(3):
         btn_row = []
         for col in range(3):
             idx = row * 3 + col
             if board[idx] == " ":
-                cb_data = f"ttt_online_{idx}" if online else f"ttt_{idx}"
-                btn_row.append(InlineKeyboardButton(str(idx+1), callback_data=cb_data))
+                btn_row.append(InlineKeyboardButton(str(idx+1), callback_data=f"{prefix}_{idx}"))
             else:
                 symbol = {"X": "❌", "O": "⚫"}[board[idx]]
                 btn_row.append(InlineKeyboardButton(symbol, callback_data="noop"))
         kb.append(btn_row)
     return InlineKeyboardMarkup(kb)
 
-async def start_game(user_id):
-    board = [" "] * 9
-    games[user_id] = board
-    return "Your turn! You're ❌ (X).\n\n" + render_board_text(board), build_board_keyboard(board)
+def build_multi_board_keyboard(board, game_id):
+    kb = []
+    for row in range(3):
+        btn_row = []
+        for col in range(3):
+            idx = row * 3 + col
+            if board[idx] == " ":
+                btn_row.append(InlineKeyboardButton(str(idx+1), callback_data=f"ttt_multi_{game_id}_{idx}"))
+            else:
+                symbol = {"X": "❌", "O": "⚫"}[board[idx]]
+                btn_row.append(InlineKeyboardButton(symbol, callback_data="noop"))
+        kb.append(btn_row)
+    return InlineKeyboardMarkup(kb)
 
-async def handle_move(user_id, idx):
-    board = games.get(user_id)
+# --- Single-player functions ---
+
+async def start_single_game(user_id):
+    board = [" "] * 9
+    single_games[user_id] = board
+    text = "Your turn! You're ❌ (X).\n\n" + render_board_text(board)
+    markup = build_board_keyboard(board)
+    return text, markup
+
+async def handle_single_move(user_id, idx):
+    board = single_games.get(user_id)
     if not board:
         return None, None, "No game in progress. Send /ttt to start."
     if board[idx] != " ":
@@ -131,10 +160,10 @@ async def handle_move(user_id, idx):
 
     board[idx] = "X"
     if check_winner(board, "X"):
-        del games[user_id]
+        del single_games[user_id]
         return render_board_text(board) + "\n\nYou won! 🎉", None, None
     if is_board_full(board):
-        del games[user_id]
+        del single_games[user_id]
         return render_board_text(board) + "\n\nIt's a draw!", None, None
 
     bot_idx = bot_move(board)
@@ -142,162 +171,101 @@ async def handle_move(user_id, idx):
         board[bot_idx] = "O"
 
     if check_winner(board, "O"):
-        del games[user_id]
+        del single_games[user_id]
         return render_board_text(board) + "\n\nI won! 😎", None, None
     if is_board_full(board):
-        del games[user_id]
+        del single_games[user_id]
         return render_board_text(board) + "\n\nIt's a draw!", None, None
 
     return "Your turn! You're ❌ (X).\n\n" + render_board_text(board), build_board_keyboard(board), None
 
-# --- Online Multiplayer Tic Tac Toe ---
+# --- Multiplayer matchmaking and game logic ---
 
-waiting_players = set()  # user_ids waiting for match
-online_games = {}  # (user1_id, user2_id) -> {board, turn, last_move_time}
-user_to_opponent = {}  # user_id -> opponent_id
+import time
+import uuid
 
-ONLINE_TIMEOUT = 10 * 60  # 10 minutes timeout for inactivity (seconds)
+MULTI_GAME_TIMEOUT = 600  # 10 minutes
 
-def get_symbols_for_online_game(user_id, opponent_id):
-    # Assign symbols based on sorted user_id order (lowest is X, highest is O)
-    if user_id < opponent_id:
-        return "X", "O"
-    else:
-        return "O", "X"
+# To track waiting players with timestamps
+waiting_players = {}
 
-def opponent_id_for(user_id):
-    return user_to_opponent.get(user_id)
+async def start_multiplayer_game(user_id):
+    # If user already in waiting, tell them to wait
+    if user_id in waiting_players:
+        return f"You're already in the multiplayer queue. Waiting for opponent...", None
+    
+    # If user already in a game, prevent starting another
+    for g in multi_games.values():
+        if user_id in g["players"]:
+            return "You're already in a multiplayer game!", None
 
-def game_key_for_users(u1, u2):
-    return tuple(sorted([u1, u2]))
+    # Add user to waiting queue with timestamp
+    waiting_players[user_id] = time.time()
 
-async def ttt_online_start(client, message):
-    user_id = message.from_user.id
-    if user_id in waiting_players or user_id in user_to_opponent:
-        await message.reply_text("You are already waiting for or in an online game!")
-        return
+    # Check if there is another player waiting
+    if len(waiting_players) < 2:
+        return "Waiting for an opponent to join... (timeout after 10 minutes)", None
 
-    # Clean old games and waiting players timeout
-    now = time.time()
-    to_remove = []
-    for w in waiting_players:
-        # If user waited for too long, remove them
-        # (Optional: implement last wait time if needed)
-        pass
-    for game_k, gdata in list(online_games.items()):
-        if now - gdata["last_move_time"] > ONLINE_TIMEOUT:
-            # timeout: notify both players and remove game
-            u1, u2 = game_k
-            try:
-                await client.send_message(u1, "Your online Tic Tac Toe game timed out due to inactivity.")
-            except:
-                pass
-            try:
-                await client.send_message(u2, "Your online Tic Tac Toe game timed out due to inactivity.")
-            except:
-                pass
-            online_games.pop(game_k)
-            user_to_opponent.pop(u1, None)
-            user_to_opponent.pop(u2, None)
+    # Find another waiting player (not self)
+    for other_user, ts in waiting_players.items():
+        if other_user != user_id:
+            # Start game between user_id and other_user
+            game_id = str(uuid.uuid4())
+            board = [" "] * 9
+            multi_games[game_id] = {
+                "players": [user_id, other_user],
+                "board": board,
+                "turn": 0,
+                "created_at": time.time(),
+                "message_id": None,
+                "chat_id": None
+            }
+            # Remove both from waiting
+            del waiting_players[user_id]
+            del waiting_players[other_user]
+            text = f"Multiplayer Tic Tac Toe started!\n\nPlayer 1 (❌): {user_id}\nPlayer 2 (⚫): {other_user}\n\n" + render_board_text(board)
+            markup = build_multi_board_keyboard(board, game_id)
+            return text, markup
 
-    if waiting_players:
-        opponent_id = waiting_players.pop()
-        board = [" "] * 9
-        game_k = game_key_for_users(user_id, opponent_id)
-        online_games[game_k] = {
-            "board": board,
-            "turn": user_id,  # last joined user starts first
-            "last_move_time": time.time(),
-        }
-        user_to_opponent[user_id] = opponent_id
-        user_to_opponent[opponent_id] = user_id
+    return "Waiting for an opponent to join... (timeout after 10 minutes)", None
 
-        sym_user, sym_opp = get_symbols_for_online_game(user_id, opponent_id)
-
-        start_text_user = (
-            f"Tic Tac Toe online match started! You are {sym_user}.\nYour turn!\n\n"
-            + render_board_text(board)
-        )
-        kb = build_board_keyboard(board, online=True)
-        await client.send_message(user_id, start_text_user, reply_markup=kb)
-
-        start_text_opp = (
-            f"Tic Tac Toe online match started! You are {sym_opp}.\nWaiting for opponent's move...\n\n"
-            + render_board_text(board)
-        )
-        await client.send_message(opponent_id, start_text_opp, reply_markup=kb)
-    else:
-        waiting_players.add(user_id)
-        await message.reply_text("Waiting for an opponent... I'll let you know when someone joins!")
-
-async def handle_online_move(user_id, idx):
-    opponent = opponent_id_for(user_id)
-    if not opponent:
-        return None, None, "You are not in an online game."
-
-    game_k = game_key_for_users(user_id, opponent)
-    game = online_games.get(game_k)
+async def handle_multiplayer_move(user_id, game_id, idx):
+    game = multi_games.get(game_id)
     if not game:
-        user_to_opponent.pop(user_id, None)
-        user_to_opponent.pop(opponent, None)
-        return None, None, "Game data missing or expired."
+        return None, None, "This multiplayer game no longer exists."
+
+    if user_id not in game["players"]:
+        return None, None, "You're not a player in this game."
+
+    if game["players"][game["turn"]] != user_id:
+        return None, None, "It's not your turn!"
 
     board = game["board"]
-    turn = game["turn"]
-    if turn != user_id:
-        return None, None, "It's not your turn."
-
-    # Get user symbols
-    sym_user, sym_opp = get_symbols_for_online_game(user_id, opponent)
 
     if board[idx] != " ":
         return None, None, "Invalid move!"
 
-    # Place user's symbol
-    board[idx] = sym_user
+    # Mark move
+    player_symbol = "X" if game["turn"] == 0 else "O"
+    board[idx] = player_symbol
 
-    # Update last move time
-    game["last_move_time"] = time.time()
-
-    # Check if user won
-    if check_winner(board, sym_user):
-        # Send final board and message to both
-        final_board = render_board_text(board)
-        await bot.send_message(user_id, final_board + "\n\nYou won! 🎉")
-        await bot.send_message(opponent, final_board + "\n\nYou lost! 😢")
-        # Clean up
-        online_games.pop(game_k)
-        user_to_opponent.pop(user_id, None)
-        user_to_opponent.pop(opponent, None)
-        return None, None, None
+    # Check winner or draw
+    if check_winner(board, player_symbol):
+        del multi_games[game_id]
+        text = render_board_text(board) + f"\n\nPlayer {game['turn'] + 1} ({player_symbol}) won! 🎉"
+        return text, None, None
 
     if is_board_full(board):
-        final_board = render_board_text(board)
-        await bot.send_message(user_id, final_board + "\n\nIt's a draw!")
-        await bot.send_message(opponent, final_board + "\n\nIt's a draw!")
-        online_games.pop(game_k)
-        user_to_opponent.pop(user_id, None)
-        user_to_opponent.pop(opponent, None)
-        return None, None, None
+        del multi_games[game_id]
+        text = render_board_text(board) + "\n\nIt's a draw!"
+        return text, None, None
 
-    # Switch turn to opponent
-    game["turn"] = opponent
+    # Switch turn
+    game["turn"] = 1 - game["turn"]
 
-    # Send updated boards
-    board_text_user = "Waiting for opponent's move...\n\n" + render_board_text(board)
-    board_text_opp = "Your turn!\n\n" + render_board_text(board)
-
-    kb_user = build_board_keyboard(board, online=True)
-    kb_opp = build_board_keyboard(board, online=True)
-
-    # Update messages
-    try:
-        await bot.send_message(user_id, board_text_user, reply_markup=kb_user)
-        await bot.send_message(opponent, board_text_opp, reply_markup=kb_opp)
-    except:
-        pass
-
-    return None, None, None
+    text = f"Player 1 (❌): {game['players'][0]}\nPlayer 2 (⚫): {game['players'][1]}\n\n" + render_board_text(board)
+    markup = build_multi_board_keyboard(board, game_id)
+    return text, markup, None
 
 # --- Telegram Handlers ---
 
@@ -309,8 +277,8 @@ async def start(client, message):
         "/photo or /vibe – for a surprise picture 📸\n"
         "/music – for a random vibe 🎶\n"
         "/id – to get your user ID 🔍\n"
-        "/ttt – play Tic Tac Toe vs bot 🎮\n"
-        "/ttt_online – play Tic Tac Toe online with others 🕹️"
+        "/ttt – play single-player Tic Tac Toe 🎮\n"
+        "/ttt_online – play multiplayer Tic Tac Toe 🎮 (matchmake with others)"
     )
 
 @bot.on_message(filters.command("quote"))
@@ -335,43 +303,102 @@ async def music(client, message):
 async def get_id(client, message):
     await message.reply_text(f"Your user ID is: `{message.from_user.id}`", quote=True)
 
+# Single player Tic Tac Toe
 @bot.on_message(filters.command("ttt"))
 async def ttt(client, message):
     user_id = message.from_user.id
-    text, markup = await start_game(user_id)
-    await message.reply_text(text, reply_markup=markup)
+    text, markup = await start_single_game(user_id)
+    await message.reply(text, reply_markup=markup)
 
+@bot.on_callback_query(filters.regex(r"ttt_single_\d"))
+async def single_ttt_callback(client, callback_query):
+    user_id = callback_query.from_user.id
+    data = callback_query.data  # format: ttt_single_<idx>
+    idx = int(data.split("_")[-1])
+    text, markup, error = await handle_single_move(user_id, idx)
+    if error:
+        await callback_query.answer(error, show_alert=True)
+        return
+    await callback_query.message.edit_text(text, reply_markup=markup)
+    await callback_query.answer()
+
+# Multiplayer Tic Tac Toe
 @bot.on_message(filters.command("ttt_online"))
 async def ttt_online(client, message):
-    await ttt_online_start(client, message)
+    user_id = message.from_user.id
+    text, markup = await start_multiplayer_game(user_id)
+    await message.reply(text, reply_markup=markup)
 
-@bot.on_callback_query(filters.regex(r"ttt_(\d+)"))
-async def single_or_online_move(client, callback):
-    data = callback.data
-    user_id = callback.from_user.id
-
-    if data.startswith("ttt_online_"):
-        idx = int(data.split("_")[-1])
-        text, markup, error = await handle_online_move(user_id, idx)
-        if error:
-            await callback.answer(error, show_alert=True)
-        else:
-            # We do not edit inline messages here; messages are sent fresh each time
-            await callback.answer()
-    else:
-        # Single player move
-        idx = int(data.split("_")[-1])
-        text, markup, error = await handle_move(user_id, idx)
-        if error:
-            await callback.answer(error, show_alert=True)
-        else:
-            await callback.message.edit_text(text, reply_markup=markup)
-            await callback.answer()
+@bot.on_callback_query(filters.regex(r"ttt_multi_[a-f0-9\-]+_\d"))
+async def multi_ttt_callback(client, callback_query):
+    data = callback_query.data  # format: ttt_multi_<game_id>_<idx>
+    parts = data.split("_")
+    game_id = parts[2]
+    idx = int(parts[3])
+    user_id = callback_query.from_user.id
+    text, markup, error = await handle_multiplayer_move(user_id, game_id, idx)
+    if error:
+        await callback_query.answer(error, show_alert=True)
+        return
+    await callback_query.message.edit_text(text, reply_markup=markup)
+    await callback_query.answer()
 
 @bot.on_callback_query(filters.regex("noop"))
-async def noop(client, callback):
-    await callback.answer()
+async def noop_callback(client, callback_query):
+    # Do nothing for buttons that don't need action
+    await callback_query.answer()
 
-# --- Daily Scheduled Messages ---
+# --- Scheduled daily messages ---
 
-async def send_good_morning
+async def send_good_morning():
+    try:
+        await bot.send_message(BESTIE_USER_ID, "🌞 Good morning bestie! Hope your day is as lovely as you are 💖")
+    except Exception:
+        pass
+
+async def send_good_night():
+    try:
+        await bot.send_message(BESTIE_USER_ID, "🌙 Good night bestie! Sweet dreams and peaceful rest 💫")
+    except Exception:
+        pass
+
+scheduler.add_job(send_good_morning, "cron", hour=7, minute=30)
+scheduler.add_job(send_good_night, "cron", hour=22, minute=0)
+
+scheduler.start()
+
+# --- FastAPI webhook handlers ---
+
+@app.get("/")
+async def root():
+    return PlainTextResponse("Bot is running!")
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    json_data = await request.json()
+    update = Update.de_json(json_data)
+    await bot.process_updates([update])
+    return PlainTextResponse("ok")
+
+# --- Startup and webhook set ---
+
+@app.on_event("startup")
+async def startup_event():
+    # Set webhook for Render or similar environment
+    async with httpx.AsyncClient() as client:
+        url = f"{WEBHOOK_URL}/webhook"
+        await bot.start()
+        await client.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
+            data={"url": url}
+        )
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await bot.stop()
+
+# --- Run Uvicorn ---
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("bot:app", host="0.0.0.0", port=PORT)
