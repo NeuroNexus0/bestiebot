@@ -1,4 +1,5 @@
 # --- Imports ---
+
 import os
 import random
 import asyncio
@@ -12,6 +13,7 @@ from starlette.responses import PlainTextResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # --- Environment Setup ---
+
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -19,14 +21,17 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
 
 # --- Initialize bot, web app and scheduler ---
+
 bot = Client("bestie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 app = FastAPI()
 scheduler = AsyncIOScheduler(timezone=pytz.timezone("Asia/Kolkata"))
 
 # --- User ID for daily bestie messages ---
+
 BESTIE_USER_ID = 5672706639
 
 # --- Content pools ---
+
 quotes = [
     "You're not just a star, you're my whole sky. ✨",
     "Your smile makes my day every time 😊",
@@ -41,6 +46,7 @@ song_folder = "songs"
 song_files = [os.path.join(song_folder, f) for f in os.listdir(song_folder) if f.lower().endswith(('.mp3', '.wav', '.m4a'))]
 
 # --- Single Player Game Logic ---
+
 games = {}
 
 def render_board_text(board):
@@ -49,7 +55,11 @@ def render_board_text(board):
     return "\n---------\n".join(rows)
 
 def check_winner(board, player):
-    wins = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]]
+    wins = [
+        [0,1,2],[3,4,5],[6,7,8],
+        [0,3,6],[1,4,7],[2,5,8],
+        [0,4,8],[2,4,6]
+    ]
     return any(all(board[i] == player for i in line) for line in wins)
 
 def is_board_full(board):
@@ -59,10 +69,14 @@ def get_available_moves(board):
     return [i for i, v in enumerate(board) if v == " "]
 
 # Minimax algorithm for unbeatable bot
+
 def minimax(board, depth, is_max):
-    if check_winner(board, "O"): return 10 - depth
-    if check_winner(board, "X"): return depth - 10
-    if is_board_full(board): return 0
+    if check_winner(board, "O"):
+        return 10 - depth
+    if check_winner(board, "X"):
+        return depth - 10
+    if is_board_full(board):
+        return 0
 
     scores = []
     for move in get_available_moves(board):
@@ -106,7 +120,7 @@ async def handle_move(uid, idx):
     board = games.get(uid)
     if not board or board[idx] != " ":
         return None, None, "Invalid or no game."
-    
+
     board[idx] = "X"
     if check_winner(board, "X"):
         del games[uid]
@@ -122,6 +136,7 @@ async def handle_move(uid, idx):
         if check_winner(board, "O"):
             del games[uid]
             return render_board_text(board) + "\n\nI won! 😎", None, None
+
         if is_board_full(board):
             del games[uid]
             return render_board_text(board) + "\n\nDraw!", None, None
@@ -129,6 +144,7 @@ async def handle_move(uid, idx):
     return "Your turn! You're ❌ (X).\n\n" + render_board_text(board), build_board_keyboard(board), None
 
 # --- Multiplayer Logic ---
+
 waiting_queue = []
 online_games = {}
 
@@ -148,7 +164,7 @@ async def online_ttt_handler(client, msg):
         waiting_queue.append({"user_id": user_id})
         await msg.reply_text("⏳ You're added to the queue. Waiting for another player...")
 
-@bot.on_callback_query(filters.regex(r"multi_(\d+)_(\d+)_(\d)"))
+@bot.on_callback_query(filters.regex(r"multi_(\d+)_(\d+)_(\d+)"))
 async def multiplayer_move_handler(client, cq):
     x_id, o_id, move = map(int, cq.data.split("_")[1:])
     board = online_games.get((x_id, o_id))
@@ -186,6 +202,7 @@ async def multiplayer_move_handler(client, cq):
     await cq.answer()
 
 # --- Misc Commands ---
+
 @bot.on_callback_query(filters.regex("noop"))
 async def noop_handler(client, cq):
     await cq.answer()
@@ -205,7 +222,7 @@ async def ttt_cb(client, cq):
         await cq.answer(err, show_alert=True)
     else:
         await cq.message.edit_text(text, reply_markup=kb)
-        await cq.answer()
+    await cq.answer()
 
 @bot.on_message(filters.command("start"))
 async def start_handler(client, msg):
@@ -221,17 +238,24 @@ async def quote_handler(client, msg):
 
 @bot.on_message(filters.command(["photo", "vibe"]))
 async def photo_handler(client, msg):
-    await msg.reply_photo(random.choice(photo_files) if photo_files else "No photos!")
+    if photo_files:
+        await msg.reply_photo(random.choice(photo_files))
+    else:
+        await msg.reply_text("No photos!")
 
 @bot.on_message(filters.command("music"))
 async def music_handler(client, msg):
-    await msg.reply_audio(audio=random.choice(song_files), caption="Vibe 🎧") if song_files else await msg.reply_text("No songs!")
+    if song_files:
+        await msg.reply_audio(audio=random.choice(song_files), caption="Vibe 🎧")
+    else:
+        await msg.reply_text("No songs!")
 
 @bot.on_message(filters.command("id"))
 async def id_handler(client, msg):
     await msg.reply_text(f"Your user ID is: {msg.from_user.id}")
 
 # --- Daily Messages ---
+
 async def send_good_morning():
     await bot.send_message(BESTIE_USER_ID, "🌞 Good morning bestie! Hope your day is as lovely as you are 💖")
 
@@ -246,6 +270,7 @@ scheduler.add_job(send_good_afternoon, 'cron', hour=13, minute=30)
 scheduler.add_job(send_good_night, 'cron', hour=22, minute=0)
 
 # --- FastAPI Webhook Routes ---
+
 @app.post(f"/{BOT_TOKEN}")
 async def telegram_webhook(request: Request):
     update_data = await request.json()
@@ -258,6 +283,7 @@ async def root():
     return {"message": "Bestie Bot is running!"}
 
 # --- Startup & Shutdown Hooks ---
+
 @app.on_event("startup")
 async def startup_event():
     await bot.start()
@@ -274,6 +300,7 @@ async def shutdown_event():
     scheduler.shutdown()
 
 # --- Uvicorn Entry Point ---
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
