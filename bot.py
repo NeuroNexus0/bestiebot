@@ -388,7 +388,7 @@ async def send_good_afternoon():
 async def send_good_night(): 
     await bot.send_message(BESTIE_USER_ID, greetings["night"])
 
-scheduler.add_job(send_good_morning, 'cron', hour=7, minute=30)
+scheduler.add_job(send_good_morning, 'cron', hour=6, minute=00)
 scheduler.add_job(send_good_afternoon, 'cron', hour=13, minute=30)
 scheduler.add_job(send_good_night, 'cron', hour=22, minute=0)
 
