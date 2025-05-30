@@ -5,10 +5,12 @@ import pytz
 import httpx
 
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Update, Message
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Update
 from fastapi import FastAPI, Request
 from starlette.responses import PlainTextResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from datetime import datetime
+from pytz import timezone
 
 # --- Environment Setup ---
 
@@ -46,8 +48,11 @@ waiting_queue = []
 online_games = {}  # key: (x_id, o_id), value: {"board": board, "messages": {x_id: msg1, o_id: msg2}}
 rematch_requests = {}
 
-# New: track users in chat mode for multiplayer games
-chat_waiting_for_message = set()  # user_ids waiting to send a chat message
+# Track users waiting to send chat message
+chat_waiting_for_message = set()
+
+# Track all users who started the bot for Good Morning message
+users = set()
 
 def render_board_text(board):
     symbol_map = {"X": "❌", "O": "⚫", " ": "⬜"}
@@ -104,38 +109,53 @@ def build_board_keyboard(board, prefix="ttt", with_chat=False):
                 row.append(InlineKeyboardButton({"X": "❌", "O": "⚫"}[board[i]], callback_data="noop"))
         kb.append(row)
     if with_chat:
-        # Add chat button in a new row
         kb.append([InlineKeyboardButton("💬 Chat", callback_data=f"chat_{prefix}")])
     return InlineKeyboardMarkup(kb)
 
 # --- Single Player ---
 
-async def start_game(uid):
+@bot.on_message(filters.command("start"))
+async def start_single_player(client, message):
+    uid = message.from_user.id
+    users.add(uid)  # Track user for Good Morning
     board = [" "] * 9
     games[uid] = board
-    return "Your turn! You're ❌ (X).\n\n" + render_board_text(board), build_board_keyboard(board)
+    txt = "Your turn! You're ❌ (X).\n\n" + render_board_text(board)
+    kb = build_board_keyboard(board)
+    await message.reply_text(txt, reply_markup=kb)
 
-async def handle_move(uid, idx):
+@bot.on_callback_query(filters.regex(r"ttt_(\d+)"))
+async def singleplayer_move(client, cq):
+    uid = cq.from_user.id
+    idx = int(cq.data.split("_")[1])
     board = games.get(uid)
     if not board or board[idx] != " ":
-        return None, None, "Invalid or no game."
+        await cq.answer("Invalid move or no game.", show_alert=True)
+        return
     board[idx] = "X"
     if check_winner(board, "X"):
         del games[uid]
-        return render_board_text(board) + "\n\nYou won! 🎉", None, None
+        await cq.message.edit_text(render_board_text(board) + "\n\nYou won! 🎉")
+        return
     if is_board_full(board):
         del games[uid]
-        return render_board_text(board) + "\n\nDraw!", None, None
+        await cq.message.edit_text(render_board_text(board) + "\n\nDraw!")
+        return
     bot_idx = bot_move(board)
     if bot_idx is not None:
         board[bot_idx] = "O"
         if check_winner(board, "O"):
             del games[uid]
-            return render_board_text(board) + "\n\nI won! 😎", None, None
+            await cq.message.edit_text(render_board_text(board) + "\n\nI won! 😎")
+            return
         if is_board_full(board):
             del games[uid]
-            return render_board_text(board) + "\n\nDraw!", None, None
-    return "Your turn! You're ❌ (X).\n\n" + render_board_text(board), build_board_keyboard(board), None
+            await cq.message.edit_text(render_board_text(board) + "\n\nDraw!")
+            return
+    txt = "Your turn! You're ❌ (X).\n\n" + render_board_text(board)
+    kb = build_board_keyboard(board)
+    await cq.message.edit_text(txt, reply_markup=kb)
+    await cq.answer()
 
 # --- Multiplayer ---
 
@@ -167,6 +187,7 @@ async def multiplayer_move_handler(client, cq):
         await cq.answer("Game not found", show_alert=True)
         return
     board = game["board"]
+    # Determine turn
     turn = "X" if board.count("X") <= board.count("O") else "O"
     if (turn == "X" and uid != x_id) or (turn == "O" and uid != o_id):
         await cq.answer("Not your turn", show_alert=True)
@@ -209,72 +230,119 @@ async def rematch_request_handler(client, cq):
         del rematch_requests[key]
         board = [" "] * 9
         markup = build_board_keyboard(board, prefix=f"multi_{x_id}_{o_id}", with_chat=True)
-        txt = render_board_text(board)
-        m1 = await bot.send_message(x_id, f"🔁 Rematch started! You're ❌\n\n{txt}", reply_markup=markup)
-        m2 = await bot.send_message(o_id, f"🔁 Rematch started! You're ⚫\nWaiting for ❌\n\n{txt}", reply_markup=markup)
+        m1 = await bot.send_message(x_id, f"🔁 Rematch started! You're ❌\n\n{render_board_text(board)}", reply_markup=markup)
+        m2 = await bot.send_message(o_id, f"🔁 Rematch started! You're ⚫\n\n{render_board_text(board)}", reply_markup=markup)
         online_games[(x_id, o_id)] = {"board": board, "messages": {x_id: m1, o_id: m2}}
-        await cq.message.delete()
+        await cq.answer("Rematch started!")
     else:
-        await cq.answer("Waiting for opponent to accept rematch")
+        await cq.answer("Rematch requested. Waiting for opponent...")
 
-# --- In-Game Chat ---
+# --- In-game chat ---
 
 @bot.on_callback_query(filters.regex(r"chat_multi_(\d+)_(\d+)"))
 async def chat_button_handler(client, cq):
-    user_id = cq.from_user.id
-    data = cq.data.split("_")
-    x_id, o_id = int(data[2]), int(data[3])
-    # Only allow chatting if user is part of game
-    if (x_id, o_id) not in online_games and (o_id, x_id) not in online_games:
-        await cq.answer("Game no longer active.", show_alert=True)
-        return
-    chat_waiting_for_message.add(user_id)
-    await cq.answer("Please send your message now.", show_alert=True)
+    uid = cq.from_user.id
+    # Register user to wait for message input
+    chat_waiting_for_message.add(uid)
+    await cq.answer("Please type your message now. It will be sent to your opponent.")
 
-@bot.on_message(filters.private & ~filters.command())
-async def chat_message_forwarder(client, msg):
-    user_id = msg.from_user.id
-    if user_id not in chat_waiting_for_message:
-        return  # Not in chat mode, ignore
+@bot.on_message()
+async def chat_message_forwarder(client, message):
+    uid = message.from_user.id
+    if uid in chat_waiting_for_message:
+        chat_waiting_for_message.remove(uid)
+        # Find game where user is playing
+        for (x_id, o_id), game in online_games.items():
+            if uid == x_id:
+                opponent = o_id
+                break
+            elif uid == o_id:
+                opponent = x_id
+                break
+        else:
+            await message.reply_text("You're not in a multiplayer game.")
+            return
+        try:
+            await bot.send_message(opponent, f"💬 Message from your opponent:\n\n{message.text}")
+            await message.reply_text("Message sent!")
+        except Exception:
+            await message.reply_text("Failed to send message to opponent.")
+    # Else do nothing to other messages
 
-    # Find opponent id from active game
-    opponent_id = None
-    for (x_id, o_id), game in online_games.items():
-        if user_id == x_id:
-            opponent_id = o_id
-            break
-        elif user_id == o_id:
-            opponent_id = x_id
-            break
-    if not opponent_id:
-        chat_waiting_for_message.discard(user_id)
-        await msg.reply_text("You are not in a game currently.")
-        return
+# --- Daily Good Morning scheduler ---
 
-    chat_waiting_for_message.discard(user_id)
-    # Forward message to opponent with info who sent it
-    await bot.send_message(opponent_id, f"💬 Message from your opponent:\n\n{msg.text or '<non-text message>'}")
+async def daily_good_morning():
+    for user_id in users:
+        try:
+            await bot.send_message(user_id, "🌞 Good Morning Dumb! Hope you have a fantastic day! 😊")
+        except Exception:
+            pass
 
-    await msg.reply_text("✅ Your message was sent!")
+def schedule_good_morning():
+    ist = timezone("Asia/Kolkata")
+    scheduler.add_job(
+        lambda: asyncio.create_task(daily_good_morning()), 
+        "cron", hour=7, minute=0, timezone=ist
+    )
 
-# --- Other bot commands and handlers (quotes, pics, songs, etc.) can be added here as needed ---
+async def daily_good_afternoon():
+    for user_id in users:
+        try:
+            await bot.send_message(user_id, "🌞 Good Afternoon Jigs! Read well and don't to forget to text me huh! 😊")
+        except Exception:
+            pass
 
-# --- Webhook FastAPI Setup (optional) ---
+def schedule_good_afternoon():
+    ist = timezone("Asia/Kolkata")
+    scheduler.add_job(
+        lambda: asyncio.create_task(daily_good_morning()), 
+        "cron", hour=13, minute=30, timezone=ist
+    )
 
-@app.post("/")
-async def webhook(request: Request):
-    data = await request.body()
-    update = Update.de_json(data.decode(), bot)
-    await bot.process_updates([update])
-    return PlainTextResponse("OK")
+async def daily_good_night():
+    for user_id in users:
+        try:
+            await bot.send_message(user_id, "🌞 Good Night Dumb! Have sweeet dreams like gulab jamun but u are the sweetest! 😊")
+        except Exception:
+            pass
+
+def schedule_good_night():
+    ist = timezone("Asia/Kolkata")
+    scheduler.add_job(
+        lambda: asyncio.create_task(daily_good_morning()), 
+        "cron", hour=22, minute=30, timezone=ist
+    )
+
+
+
+# --- Webhook + FastAPI ---
+
+@app.get("/")
+async def root():
+    return PlainTextResponse("BestieBot is running.")
+
+@app.post(f"/{BOT_TOKEN}")
+async def webhook(req: Request):
+    data = await req.json()
+    update = Update.de_json(data)
+    await bot.process_update(update)
+    return PlainTextResponse("ok")
 
 async def set_webhook():
     async with httpx.AsyncClient() as client:
-        await client.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook", json={"url": WEBHOOK_URL})
+        webhook_url = f"{WEBHOOK_URL}/{BOT_TOKEN}"
+        resp = await client.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
+            data={"url": webhook_url}
+        )
+        if resp.status_code == 200:
+            print("Webhook set successfully")
+        else:
+            print("Failed to set webhook:", resp.text)
 
 if __name__ == "__main__":
     import uvicorn
+    schedule_good_morning()
     scheduler.start()
-    asyncio.get_event_loop().run_until_complete(bot.start())
     asyncio.get_event_loop().run_until_complete(set_webhook())
     uvicorn.run(app, host="0.0.0.0", port=PORT)
