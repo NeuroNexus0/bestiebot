@@ -1,3 +1,5 @@
+# --- Imports ---
+
 import os
 import random
 import asyncio
@@ -11,6 +13,7 @@ from starlette.responses import PlainTextResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # --- Environment Setup ---
+
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -24,6 +27,7 @@ scheduler = AsyncIOScheduler(timezone=pytz.timezone("Asia/Kolkata"))
 BESTIE_USER_ID = 5672706639
 
 # --- Content Pools ---
+
 quotes = [
     "You're not just a star, you're my whole sky. ✨",
     "Your smile makes my day every time 😊",
@@ -38,28 +42,38 @@ song_folder = "songs"
 song_files = [os.path.join(song_folder, f) for f in os.listdir(song_folder) if f.lower().endswith(('.mp3', '.wav', '.m4a'))]
 
 # --- Game Logic ---
+
 games = {}
 waiting_queue = []
-online_games = {}
-chat_waiting = set()
+online_games = {}  # (x_id, o_id): {board, messages}
+rematch_requests = {}
 
 def render_board_text(board):
-    s = {"X": "❌", "O": "⚫", " ": "⬜"}
-    rows = [" | ".join(s[board[i*3+j]] for j in range(3)) for i in range(3)]
+    symbol_map = {"X": "❌", "O": "⚫", " ": "⬜"}
+    rows = [" | ".join(symbol_map[board[j + i * 3]] for j in range(3)) for i in range(3)]
     return "\n---------\n".join(rows)
 
-def check_winner(board, p):
-    return any(all(board[i] == p for i in line) for line in [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]])
+def check_winner(board, player):
+    wins = [
+        [0,1,2],[3,4,5],[6,7,8],
+        [0,3,6],[1,4,7],[2,5,8],
+        [0,4,8],[2,4,6]
+    ]
+    return any(all(board[i] == player for i in line) for line in wins)
 
-def is_full(board): return all(s != " " for s in board)
-def available_moves(board): return [i for i, s in enumerate(board) if s == " "]
+def is_board_full(board):
+    return all(space != " " for space in board)
+
+def get_available_moves(board):
+    return [i for i, v in enumerate(board) if v == " "]
 
 def minimax(board, depth, is_max):
     if check_winner(board, "O"): return 10 - depth
     if check_winner(board, "X"): return depth - 10
-    if is_full(board): return 0
+    if is_board_full(board): return 0
+
     scores = []
-    for move in available_moves(board):
+    for move in get_available_moves(board):
         board[move] = "O" if is_max else "X"
         score = minimax(board, depth + 1, not is_max)
         board[move] = " "
@@ -67,9 +81,8 @@ def minimax(board, depth, is_max):
     return max(scores) if is_max else min(scores)
 
 def bot_move(board):
-    best = -1e9
-    move = None
-    for m in available_moves(board):
+    best, move = -float('inf'), None
+    for m in get_available_moves(board):
         board[m] = "O"
         score = minimax(board, 0, False)
         board[m] = " "
@@ -78,170 +91,224 @@ def bot_move(board):
             move = m
     return move
 
-def build_keyboard(board, prefix, with_chat=False):
+def build_board_keyboard(board, prefix="ttt"):
     kb = []
-    for i in range(3):
+    for r in range(3):
         row = []
-        for j in range(3):
-            idx = i * 3 + j
-            if board[idx] == " ":
-                row.append(InlineKeyboardButton(str(idx+1), callback_data=f"{prefix}_{idx}"))
+        for c in range(3):
+            i = r * 3 + c
+            if board[i] == " ":
+                row.append(InlineKeyboardButton(str(i + 1), callback_data=f"{prefix}_{i}"))
             else:
-                row.append(InlineKeyboardButton("❌" if board[idx] == "X" else "⚫", callback_data="noop"))
+                row.append(InlineKeyboardButton({"X": "❌", "O": "⚫"}[board[i]], callback_data="noop"))
         kb.append(row)
-    if with_chat:
-        kb.append([InlineKeyboardButton("💬 Chat", callback_data=f"chat_{prefix}")])
     return InlineKeyboardMarkup(kb)
 
-# --- Daily Scheduler ---
-async def send_daily_message():
-    try:
-        if quotes:
-            await bot.send_message(BESTIE_USER_ID, random.choice(quotes))
-        if photo_files:
-            await bot.send_photo(BESTIE_USER_ID, random.choice(photo_files))
-        if song_files:
-            await bot.send_audio(BESTIE_USER_ID, random.choice(song_files))
-    except Exception:
-        pass
+# --- Single Player ---
 
-async def daily_good_morning():
-    await bot.send_message(BESTIE_USER_ID, "🌞 Good Morning Dumb! Hope you have a fantastic day! 😊")
-
-async def daily_good_afternoon():
-    await bot.send_message(BESTIE_USER_ID, "🌞 Good Afternoon Jigs! Read well and don't forget to text me huh! 😊")
-
-async def daily_good_night():
-    await bot.send_message(BESTIE_USER_ID, "🌙 Good Night Dumb! Have sweet dreams like gulab jamun but you are the sweetest! 😊")
-
-def schedule_all():
-    scheduler.add_job(send_daily_message, "cron", hour=9, minute=0)
-    scheduler.add_job(lambda: asyncio.create_task(daily_good_morning()), "cron", hour=7, minute=0)
-    scheduler.add_job(lambda: asyncio.create_task(daily_good_afternoon()), "cron", hour=13, minute=30)
-    scheduler.add_job(lambda: asyncio.create_task(daily_good_night()), "cron", hour=22, minute=30)
-
-# --- Bot Handlers ---
-@bot.on_message(filters.command("start"))
-async def start_handler(client, msg):
-    await msg.reply_text("Hey bestie! Type /ttt to play Tic Tac Toe with me, or /onlinettt to find a human opponent!")
-
-@bot.on_message(filters.command("ttt"))
-async def ttt(client, msg):
-    uid = msg.from_user.id
+async def start_game(uid):
     board = [" "] * 9
     games[uid] = board
-    await msg.reply_text("You're ❌ (X). Let's start!\n" + render_board_text(board), reply_markup=build_keyboard(board, "ttt"))
+    return "Your turn! You're ❌ (X).\n\n" + render_board_text(board), build_board_keyboard(board)
 
-@bot.on_callback_query(filters.regex(r"ttt_(\d)"))
-async def single_move(client, cq):
-    uid = cq.from_user.id
+async def handle_move(uid, idx):
     board = games.get(uid)
-    if not board: return await cq.answer("No game in progress", show_alert=True)
-    move = int(cq.data.split("_")[1])
-    if board[move] != " ": return await cq.answer("Invalid move", show_alert=True)
-    board[move] = "X"
+    if not board or board[idx] != " ":
+        return None, None, "Invalid or no game."
+    board[idx] = "X"
     if check_winner(board, "X"):
         del games[uid]
-        return await cq.message.edit_text(render_board_text(board) + "\nYou win! 🎉")
-    if is_full(board):
+        return render_board_text(board) + "\n\nYou won! 🎉", None, None
+    if is_board_full(board):
         del games[uid]
-        return await cq.message.edit_text(render_board_text(board) + "\nIt's a draw!")
-    board[bot_move(board)] = "O"
-    if check_winner(board, "O"):
-        del games[uid]
-        return await cq.message.edit_text(render_board_text(board) + "\nI win! 😎")
-    await cq.message.edit_text("Your move!\n" + render_board_text(board), reply_markup=build_keyboard(board, "ttt"))
-    await cq.answer()
+        return render_board_text(board) + "\n\nDraw!", None, None
+    bot_idx = bot_move(board)
+    if bot_idx is not None:
+        board[bot_idx] = "O"
+        if check_winner(board, "O"):
+            del games[uid]
+            return render_board_text(board) + "\n\nI won! 😎", None, None
+        if is_board_full(board):
+            del games[uid]
+            return render_board_text(board) + "\n\nDraw!", None, None
+    return "Your turn! You're ❌ (X).\n\n" + render_board_text(board), build_board_keyboard(board), None
+
+# --- Multiplayer ---
 
 @bot.on_message(filters.command("onlinettt"))
-async def online(client, msg):
-    uid = msg.from_user.id
-    if uid in waiting_queue:
-        return await msg.reply("Already in queue!")
-    if waiting_queue:
-        x_id, o_id = waiting_queue.pop(0), uid
+async def online_ttt_handler(client, msg):
+    user_id = msg.from_user.id
+    if waiting_queue and waiting_queue[0] != user_id:
+        x_id, o_id = waiting_queue.pop(0), user_id
         board = [" "] * 9
-        kb = build_keyboard(board, f"multi_{x_id}_{o_id}", with_chat=True)
-        txt = render_board_text(board)
-        m1 = await bot.send_message(x_id, f"🎮 You're ❌\n{txt}", reply_markup=kb)
-        m2 = await bot.send_message(o_id, f"🎮 You're ⚫\n{txt}", reply_markup=kb)
+        markup = build_board_keyboard(board, prefix=f"multi_{x_id}_{o_id}")
+        board_text = render_board_text(board)
+        m1 = await bot.send_message(x_id, f"🎮 Multiplayer started! You're ❌\n\n{board_text}", reply_markup=markup)
+        m2 = await bot.send_message(o_id, f"🎮 Multiplayer started! You're ⚫\nWaiting for ❌\n\n{board_text}", reply_markup=markup)
         online_games[(x_id, o_id)] = {"board": board, "messages": {x_id: m1, o_id: m2}}
     else:
-        waiting_queue.append(uid)
-        await msg.reply("Waiting for opponent...")
+        waiting_queue.append(user_id)
+        await msg.reply_text("⏳ You're in the queue. Waiting for an opponent...")
 
-@bot.on_callback_query(filters.regex(r"multi_(\d+)_(\d+)_(\d)"))
-async def multiplayer_move(client, cq):
-    x, o, idx = map(int, cq.data.split("_")[1:])
+@bot.on_callback_query(filters.regex(r"multi_(\d+)_(\d+)_(\d+)"))
+async def multiplayer_move_handler(client, cq):
+    x_id, o_id, move = map(int, cq.data.split("_")[1:])
     uid = cq.from_user.id
-    key = (x, o)
-    game = online_games.get(key)
-    if not game: return await cq.answer("Game not found", show_alert=True)
+    game = online_games.get((x_id, o_id))
+    if not game:
+        await cq.answer("Game not found", show_alert=True)
+        return
     board = game["board"]
     turn = "X" if board.count("X") <= board.count("O") else "O"
-    if (turn == "X" and uid != x) or (turn == "O" and uid != o):
-        return await cq.answer("Not your turn!", show_alert=True)
-    if board[idx] != " ": return await cq.answer("Invalid move!", show_alert=True)
-    board[idx] = turn
-    txt = render_board_text(board)
-    markup = build_keyboard(board, f"multi_{x}_{o}", with_chat=True)
-    for uid_, msg_ in game["messages"].items():
-        await msg_.edit_text(txt, reply_markup=markup)
+    if (turn == "X" and uid != x_id) or (turn == "O" and uid != o_id):
+        await cq.answer("Not your turn", show_alert=True)
+        return
+    if board[move] != " ":
+        await cq.answer("Invalid move", show_alert=True)
+        return
+    board[move] = turn
+    text = render_board_text(board)
+    markup = build_board_keyboard(board, prefix=f"multi_{x_id}_{o_id}")
+
+    async def edit(msg_obj, txt): await msg_obj.edit_text(txt, reply_markup=markup)
+    m1, m2 = game["messages"][x_id], game["messages"][o_id]
+
     if check_winner(board, turn):
-        del online_games[key]
-        await bot.send_message(x, f"{turn} wins! 🔥")
-        await bot.send_message(o, f"{turn} wins! 🔥")
-    elif is_full(board):
-        del online_games[key]
-        await bot.send_message(x, "Draw!")
-        await bot.send_message(o, "Draw!")
+        del online_games[(x_id, o_id)]
+        rematch_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔁 Rematch", callback_data=f"rematch_{x_id}_{o_id}")]
+        ])
+        await edit(m1, f"{text}\n\n{turn} wins!")
+        await edit(m2, f"{text}\n\n{turn} wins!")
+        await bot.send_message(x_id, "Ask for rematch 🔁", reply_markup=rematch_markup)
+        await bot.send_message(o_id, "Ask for rematch 🔁", reply_markup=rematch_markup)
+    elif is_board_full(board):
+        del online_games[(x_id, o_id)]
+        await edit(m1, f"{text}\n\nDraw!")
+        await edit(m2, f"{text}\n\nDraw!")
+    else:
+        await edit(m1, text)
+        await edit(m2, text)
     await cq.answer()
 
-@bot.on_callback_query(filters.regex(r"chat_multi_(\d+)_(\d+)"))
-async def chat_request(client, cq):
-    chat_waiting.add(cq.from_user.id)
-    await cq.answer("Send your message now", show_alert=True)
-
-@bot.on_message(filters.private & ~filters.command())
-async def chat_msg(client, msg):
-    if msg.from_user.id not in chat_waiting:
-        return
-    chat_waiting.remove(msg.from_user.id)
-    opp = None
-    for (x, o), game in online_games.items():
-        if msg.from_user.id == x: opp = o
-        elif msg.from_user.id == o: opp = x
-    if opp:
-        await bot.send_message(opp, f"💬 Message from your opponent:\n\n{msg.text or '<non-text>'}")
-        await msg.reply("✅ Sent!")
+@bot.on_callback_query(filters.regex(r"rematch_(\d+)_(\d+)"))
+async def rematch_request_handler(client, cq):
+    x_id, o_id = map(int, cq.data.split("_")[1:])
+    sender = cq.from_user.id
+    key = tuple(sorted([x_id, o_id]))
+    rematch_requests.setdefault(key, set()).add(sender)
+    if len(rematch_requests[key]) == 2:
+        del rematch_requests[key]
+        board = [" "] * 9
+        markup = build_board_keyboard(board, prefix=f"multi_{x_id}_{o_id}")
+        txt = render_board_text(board)
+        m1 = await bot.send_message(x_id, f"🔁 Rematch started! You're ❌\n\n{txt}", reply_markup=markup)
+        m2 = await bot.send_message(o_id, f"🔁 Rematch started! You're ⚫\n\n{txt}", reply_markup=markup)
+        online_games[(x_id, o_id)] = {"board": board, "messages": {x_id: m1, o_id: m2}}
     else:
-        await msg.reply("You're not in a game!")
+        await cq.answer("Rematch request sent. Waiting for opponent.", show_alert=True)
 
-# --- FastAPI Webhook Handler ---
+# --- In-Game Chat ---
+
+@bot.on_message(filters.command("say") & filters.private)
+async def say_handler(client, msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) != 2:
+        await msg.reply_text("Usage: /say message")
+        return
+    uid = msg.from_user.id
+    for (x_id, o_id), data in online_games.items():
+        if uid in (x_id, o_id):
+            peer = o_id if uid == x_id else x_id
+            await bot.send_message(peer, f"💬 Message from your opponent:\n{parts[1]}")
+            await msg.reply_text("Sent.")
+            return
+    await msg.reply_text("No active game found.")
+
+# --- Misc ---
+
+@bot.on_callback_query(filters.regex("noop"))
+async def noop_handler(client, cq): await cq.answer()
+
+@bot.on_message(filters.command("ttt"))
+async def ttt_handler(client, msg):
+    uid = msg.from_user.id
+    text, kb = await start_game(uid)
+    await msg.reply_text(text, reply_markup=kb)
+
+@bot.on_callback_query(filters.regex(r"ttt_\d"))
+async def ttt_cb(client, cq):
+    uid = cq.from_user.id
+    idx = int(cq.data.split("_")[1])
+    text, kb, err = await handle_move(uid, idx)
+    if err:
+        await cq.answer(err, show_alert=True)
+    else:
+        await cq.message.edit_text(text, reply_markup=kb)
+    await cq.answer()
+
+@bot.on_message(filters.command("start"))
+async def start_handler(client, msg):
+    await msg.reply_text(
+        "Hey Dumb! 💌\n\nI'm your special bot made with love.\nCommands:\n"
+        "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
+        "/id – your ID 🔍\n/ttt – play solo TTT 🎮\n/onlinettt – play with others 🌐\n"
+        "/say – send message to opponent 💬"
+    )
+
+@bot.on_message(filters.command("quote"))
+async def quote_handler(client, msg): await msg.reply_text(random.choice(quotes))
+
+@bot.on_message(filters.command(["photo", "vibe"]))
+async def photo_handler(client, msg):
+    if photo_files: await msg.reply_photo(random.choice(photo_files))
+    else: await msg.reply_text("No photos!")
+
+@bot.on_message(filters.command("music"))
+async def music_handler(client, msg):
+    if song_files: await msg.reply_audio(audio=random.choice(song_files), caption="Vibe 🎧")
+    else: await msg.reply_text("No songs!")
+
+@bot.on_message(filters.command("id"))
+async def id_handler(client, msg): await msg.reply_text(f"Your user ID is: {msg.from_user.id}")
+
+# --- Daily Messages ---
+
+async def send_good_morning(): await bot.send_message(BESTIE_USER_ID, "🌞 Good morning bestie! 💖")
+async def send_good_afternoon(): await bot.send_message(BESTIE_USER_ID, "🌞 Good Afternoon Kritika! 💖🎶")
+async def send_good_night(): await bot.send_message(BESTIE_USER_ID, "🌙 Good night Dumb Jigs 💫")
+
+scheduler.add_job(send_good_morning, 'cron', hour=7, minute=30)
+scheduler.add_job(send_good_afternoon, 'cron', hour=13, minute=30)
+scheduler.add_job(send_good_night, 'cron', hour=22, minute=0)
+
+# --- FastAPI Webhook ---
+
 @app.post(f"/{BOT_TOKEN}")
-async def webhook(req: Request):
-    try:
-        data = await req.body()
-        update = Update.de_json(data.decode(), bot)
-        await bot.process_update(update)
-        return PlainTextResponse("ok")
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return PlainTextResponse("error", status_code=500)
+async def telegram_webhook(request: Request):
+    update_data = await request.json()
+    update = Update.de_json(update_data, bot)
+    await bot.process_update(update)
+    return PlainTextResponse("ok")
 
-async def set_webhook():
+@app.get("/")
+async def root(): return {"message": "Bestie Bot is running!"}
+
+@app.on_event("startup")
+async def startup_event():
+    await bot.start()
+    scheduler.start()
     async with httpx.AsyncClient() as client:
         await client.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
-            json={"url": f"{WEBHOOK_URL}/{BOT_TOKEN}"}
+            data={"url": f"{WEBHOOK_URL}/{BOT_TOKEN}"}
         )
 
-# --- Entrypoint ---
+@app.on_event("shutdown")
+async def shutdown_event():
+    await bot.stop()
+    scheduler.shutdown()
+
 if __name__ == "__main__":
     import uvicorn
-    schedule_all()
-    scheduler.start()
-    asyncio.get_event_loop().run_until_complete(bot.start())
-    asyncio.get_event_loop().run_until_complete(set_webhook())
     uvicorn.run(app, host="0.0.0.0", port=PORT)
