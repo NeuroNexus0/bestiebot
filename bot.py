@@ -1,17 +1,19 @@
 # --- Imports ---
+
 import os
 import random
 import asyncio
 import pytz
 import httpx
+
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, Update
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Update, Message
 from fastapi import FastAPI, Request
 from starlette.responses import PlainTextResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from typing import Dict, List, Tuple, Optional, Set
 
 # --- Environment Setup ---
+
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -26,6 +28,7 @@ BESTIE_USER_ID = 5672706639
 MY_USER_ID = 7590978422
 
 # --- Content Pools ---
+
 quotes = [
     "You're not just a star, you're my whole sky. ✨",
     "Your smile makes my day every time 😊",
@@ -40,715 +43,226 @@ greetings = {
     "night": "🌙 Good night Dumb Jigs I Like u the most 💫"
 }
 
-# --- Media Management ---
 photo_folder = "photos"
+photo_files = [os.path.join(photo_folder, f) for f in os.listdir(photo_folder) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+
 song_folder = "songs"
+song_files = [os.path.join(song_folder, f) for f in os.listdir(song_folder) if f.lower().endswith(('.mp3', '.wav', '.m4a'))]
 
-# Create folders if they don't exist
-os.makedirs(photo_folder, exist_ok=True)
-os.makedirs(song_folder, exist_ok=True)
+# --- Game Logic ---
 
-def get_photo_files() -> List[str]:
-    return [os.path.join(photo_folder, f) for f in os.listdir(photo_folder) 
-            if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp'))]
+games = {}
+waiting_queue = []
+online_games = {}  # (x_id, o_id): {board, messages}
+rematch_requests = {}
 
-def get_song_files() -> List[str]:
-    return [os.path.join(song_folder, f) for f in os.listdir(song_folder) 
-            if f.lower().endswith(('.mp3', '.wav', '.m4a', '.flac', '.ogg'))]
+def render_board_text(board):
+    symbol_map = {"X": "❌", "O": "⚫", " ": "⬜"}
+    rows = [" | ".join(symbol_map[board[j + i * 3]] for j in range(3)) for i in range(3)]
+    return "\n---------\n".join(rows)
 
-# Track upload mode for MY_USER_ID
-upload_mode = {"photo": False, "song": False}
+def check_winner(board, player):
+    wins = [
+        [0,1,2],[3,4,5],[6,7,8],
+        [0,3,6],[1,4,7],[2,5,8],
+        [0,4,8],[2,4,6]
+    ]
+    return any(all(board[i] == player for i in line) for line in wins)
 
-# --- Game Constants ---
-SUITS = ["♠️", "♥️", "♦️", "♣️"]
-VALUES = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+def is_board_full(board):
+    return all(space != " " for space in board)
 
-# --- Solitaire Game Implementation ---
-class SolitaireGame:
-    def __init__(self, user_id: int):
-        self.user_id = user_id
-        self.stock = []
-        self.waste = []
-        self.foundations = {suit: [] for suit in SUITS}
-        self.tableau = [[] for _ in range(7)]
-        self.selected_card = None
-        self.message_obj = None
-        
-        # Initialize and deal cards
-        self._initialize_game()
-    
-    def _initialize_game(self):
-        # Create and shuffle deck
-        deck = [(value, suit) for suit in SUITS for value in VALUES]
-        random.shuffle(deck)
-        
-        # Deal to tableau
-        for i in range(7):
-            self.tableau[i] = deck[:i+1]
-            deck = deck[i+1:]
-        
-        # Remaining cards go to stock
-        self.stock = deck
-    
-    def draw_from_stock(self):
-        if not self.stock:
-            self.stock = self.waste[::-1]
-            self.waste = []
-        else:
-            self.waste.append(self.stock.pop())
-    
-    def select_card(self, pile_type: str, pile_idx: int, card_idx: int):
-        if pile_type == "waste":
-            if self.waste:
-                self.selected_card = ("waste", -1, len(self.waste)-1)
-        elif pile_type == "foundation":
-            if self.foundations[SUITS[pile_idx]]:
-                self.selected_card = ("foundation", pile_idx, len(self.foundations[SUITS[pile_idx]])-1)
-        elif pile_type == "tableau":
-            if self.tableau[pile_idx] and card_idx < len(self.tableau[pile_idx]):
-                self.selected_card = ("tableau", pile_idx, card_idx)
-    
-    def move_card(self, dest_type: str, dest_idx: int) -> Tuple[bool, str]:
-        if not self.selected_card:
-            return False, "No card selected"
-        
-        src_type, src_idx, card_idx = self.selected_card
-        
-        # Simplified movement logic - implement proper rules as needed
-        if dest_type == "foundation":
-            suit = SUITS[dest_idx]
-            if not self.foundations[suit]:
-                if src_type == "waste":
-                    card = self.waste[-1]
-                    self.foundations[suit].append(card)
-                    self.waste.pop()
-                    self.selected_card = None
-                    return True, "Card moved to foundation"
-            return False, "Invalid move to foundation"
-        
-        return False, "Move not implemented"
-    
-    def render_game(self) -> str:
-        game_str = "🃏 Solitaire 🃏\n\n"
-        
-        # Stock and waste
-        game_str += f"Stock: {'🂠' if self.stock else '🃏'} | Waste: {'🂠' if not self.waste else self.waste[-1][0] + self.waste[-1][1]}\n\n"
-        
-        # Foundations
-        game_str += "Foundations:\n"
-        for suit in SUITS:
-            top_card = self.foundations[suit][-1] if self.foundations[suit] else "🂠"
-            game_str += f"{suit}: {top_card if isinstance(top_card, str) else top_card[0] + top_card[1]}  "
-        game_str += "\n\n"
-        
-        # Tableau
-        game_str += "Tableau:\n"
-        max_len = max(len(pile) for pile in self.tableau)
-        for i in range(max_len):
-            for pile in self.tableau:
-                if i < len(pile):
-                    card = pile[i]
-                    game_str += f"{card[0]}{card[1]} " if i == len(pile)-1 else "🂠 "
-                else:
-                    game_str += "   "
-            game_str += "\n"
-        
-        return game_str
-    
-    def build_keyboard(self) -> InlineKeyboardMarkup:
-        keyboard = []
-        
-        # Stock/Waste row
-        keyboard.append([
-            InlineKeyboardButton("Draw", callback_data="solitaire_draw"),
-            InlineKeyboardButton("Waste", callback_data="solitaire_waste")
-        ])
-        
-        # Foundations row
-        foundations_row = []
-        for i, suit in enumerate(SUITS):
-            foundations_row.append(
-                InlineKeyboardButton(suit, callback_data=f"solitaire_foundation_{suit}")
-            )
-        keyboard.append(foundations_row)
-        
-        # Tableau rows
-        for i in range(7):
-            keyboard.append([
-                InlineKeyboardButton(f"Pile {i+1}", callback_data=f"solitaire_pile_{i}_top")
-            ])
-        
-        # Control buttons
-        keyboard.append([
-            InlineKeyboardButton("🔄 New Game", callback_data="solitaire_new"),
-            InlineKeyboardButton("❌ Quit", callback_data="solitaire_quit")
-        ])
-        
-        return InlineKeyboardMarkup(keyboard)
+def get_available_moves(board):
+    return [i for i, v in enumerate(board) if v == " "]
 
-# --- Tic-Tac-Toe Game Implementation ---
-class TicTacToeGame:
-    def __init__(self, player1_id: int, player2_id: Optional[int] = None):
-        self.board = [[" " for _ in range(3)] for _ in range(3)]
-        self.players = [player1_id, player2_id] if player2_id else [player1_id]
-        self.current_player = 0
-        self.game_over = False
-        self.winner = None
-        self.message_obj = None
-        self.is_online = player2_id is not None
-    
-    def make_move(self, row: int, col: int) -> bool:
-        if self.game_over or row < 0 or row > 2 or col < 0 or col > 2 or self.board[row][col] != " ":
-            return False
-        
-        symbol = "X" if self.current_player == 0 else "O"
-        self.board[row][col] = symbol
-        
-        if self.check_winner(symbol):
-            self.game_over = True
-            self.winner = self.players[self.current_player]
-        elif self.is_board_full():
-            self.game_over = True
-        else:
-            self.current_player = 1 - self.current_player
-        
-        return True
-    
-    def check_winner(self, symbol: str) -> bool:
-        # Check rows
-        for row in self.board:
-            if all(cell == symbol for cell in row):
-                return True
-        
-        # Check columns
-        for col in range(3):
-            if all(self.board[row][col] == symbol for row in range(3)):
-                return True
-        
-        # Check diagonals
-        if all(self.board[i][i] == symbol for i in range(3)):
-            return True
-        if all(self.board[i][2-i] == symbol for i in range(3)):
-            return True
-        
-        return False
-    
-    def is_board_full(self) -> bool:
-        return all(cell != " " for row in self.board for cell in row)
-    
-    def render_board(self) -> str:
-        board_str = "🅇 Tic-Tac-Toe 🅇\n\n"
-        for row in self.board:
-            board_str += " | ".join(cell if cell != " " else "⬜️" for cell in row) + "\n"
-            board_str += "---------\n"
-        
-        if self.game_over:
-            if self.winner:
-                board_str += f"\n🎉 Player {self.players.index(self.winner)+1} wins! 🎉"
+def minimax(board, depth, is_max):
+    if check_winner(board, "O"): return 10 - depth
+    if check_winner(board, "X"): return depth - 10
+    if is_board_full(board): return 0
+
+    scores = []
+    for move in get_available_moves(board):
+        board[move] = "O" if is_max else "X"
+        score = minimax(board, depth + 1, not is_max)
+        board[move] = " "
+        scores.append(score)
+    return max(scores) if is_max else min(scores)
+
+def bot_move(board):
+    best, move = -float('inf'), None
+    for m in get_available_moves(board):
+        board[m] = "O"
+        score = minimax(board, 0, False)
+        board[m] = " "
+        if score > best:
+            best = score
+            move = m
+    return move
+
+def build_board_keyboard(board, prefix="ttt"):
+    kb = []
+    for r in range(3):
+        row = []
+        for c in range(3):
+            i = r * 3 + c
+            if board[i] == " ":
+                row.append(InlineKeyboardButton(str(i + 1), callback_data=f"{prefix}_{i}"))
             else:
-                board_str += "\n🤝 It's a draw! 🤝"
-        else:
-            player_num = self.current_player + 1
-            board_str += f"\nPlayer {player_num}'s turn ({'X' if self.current_player == 0 else 'O'})"
-        
-        return board_str
-    
-    def build_keyboard(self) -> InlineKeyboardMarkup:
-        keyboard = []
-        for row in range(3):
-            keyboard_row = []
-            for col in range(3):
-                cell = self.board[row][col]
-                if cell == " ":
-                    text = "⬜️"
-                    callback_data = f"ttt_move_{row}_{col}"
-                else:
-                    text = "❌" if cell == "X" else "⭕️"
-                    callback_data = "ttt_invalid"
-                keyboard_row.append(InlineKeyboardButton(text, callback_data=callback_data))
-            keyboard.append(keyboard_row)
-        
-        if self.game_over:
-            keyboard.append([InlineKeyboardButton("🔄 New Game", callback_data="ttt_new")])
-        keyboard.append([InlineKeyboardButton("❌ Quit", callback_data="ttt_quit")])
-        
-        return InlineKeyboardMarkup(keyboard)
+                row.append(InlineKeyboardButton({"X": "❌", "O": "⚫"}[board[i]], callback_data="noop"))
+        kb.append(row)
+    return InlineKeyboardMarkup(kb)
 
-# --- Game State Management ---
-solitaire_games: Dict[int, SolitaireGame] = {}
-ttt_games: Dict[int, TicTacToeGame] = {}  # Single player games
-online_ttt_games: Dict[str, TicTacToeGame] = {}  # Multiplayer games
-ttt_waiting_queue: List[int] = []
+# --- Single Player ---
 
-# [Rest of your existing code continues here...]
-# Include all your existing handlers and FastAPI setup
+async def start_game(uid):
+    board = [" "] * 9
+    games[uid] = board
+    return "Your turn! You're ❌ (X).\n\n" + render_board_text(board), build_board_keyboard(board)
 
-# --- Media Upload Handlers (Admin Only) ---
-@bot.on_message(filters.command("addphoto") & filters.user(MY_USER_ID))
-async def add_photo_mode_handler(client, msg: Message):
-    upload_mode["photo"] = True
-    upload_mode["song"] = False
-    await msg.reply_text(
-        "📸 Photo Upload Mode ON!\n\n"
-        "Send me photos to add to the collection.\n"
-        "Use /done when finished or /cancel to stop."
-    )
+async def handle_move(uid, idx):
+    board = games.get(uid)
+    if not board or board[idx] != " ":
+        return None, None, "Invalid or no game."
+    board[idx] = "X"
+    if check_winner(board, "X"):
+        del games[uid]
+        return render_board_text(board) + "\n\nYou won! 🎉", None, None
+    if is_board_full(board):
+        del games[uid]
+        return render_board_text(board) + "\n\nDraw!", None, None
+    bot_idx = bot_move(board)
+    if bot_idx is not None:
+        board[bot_idx] = "O"
+        if check_winner(board, "O"):
+            del games[uid]
+            return render_board_text(board) + "\n\nI won! 😎", None, None
+        if is_board_full(board):
+            del games[uid]
+            return render_board_text(board) + "\n\nDraw!", None, None
+    return "Your turn! You're ❌ (X).\n\n" + render_board_text(board), build_board_keyboard(board), None
 
-@bot.on_message(filters.command("addsong") & filters.user(MY_USER_ID))
-async def add_song_mode_handler(client, msg: Message):
-    upload_mode["song"] = True
-    upload_mode["photo"] = False
-    await msg.reply_text(
-        "🎵 Song Upload Mode ON!\n\n"
-        "Send me audio files to add to the collection.\n"
-        "Use /done when finished or /cancel to stop."
-    )
-
-@bot.on_message(filters.command(["done", "cancel"]) & filters.user(MY_USER_ID))
-async def upload_done_handler(client, msg: Message):
-    was_active = upload_mode["photo"] or upload_mode["song"]
-    upload_mode["photo"] = False
-    upload_mode["song"] = False
-    await msg.reply_text("✅ Upload mode disabled!" if was_active else "ℹ️ No upload mode was active.")
-
-@bot.on_message(filters.photo & filters.user(MY_USER_ID))
-async def handle_photo_upload(client, msg: Message):
-    if not upload_mode["photo"]:
-        return
-    
-    try:
-        file_id = msg.photo.file_id
-        filename = f"photo_{file_id[:10]}_{random.randint(1000, 9999)}.jpg"
-        file_path = os.path.join(photo_folder, filename)
-        await msg.download(file_name=file_path)
-        await msg.reply_text(f"✅ Photo saved as: {filename}")
-    except Exception as e:
-        await msg.reply_text(f"❌ Error saving photo: {str(e)}")
-
-@bot.on_message(filters.audio & filters.user(MY_USER_ID))
-async def handle_audio_upload(client, msg: Message):
-    if not upload_mode["song"]:
-        return
-    
-    try:
-        audio = msg.audio
-        filename = audio.file_name or f"{audio.performer or 'Unknown'} - {audio.title or 'Unknown'}_{random.randint(1000, 9999)}.mp3"
-        filename = "".join(c for c in filename if c.isalnum() or c in "._- ").strip()
-        file_path = os.path.join(song_folder, filename)
-        await msg.download(file_name=file_path)
-        
-        duration = f"{audio.duration // 60}:{audio.duration % 60:02d}" if audio.duration else "Unknown"
-        await msg.reply_text(
-            f"✅ Song saved!\n📁 Filename: {filename}\n⏱️ Duration: {duration}"
-        )
-    except Exception as e:
-        await msg.reply_text(f"❌ Error saving song: {str(e)}")
-
-@bot.on_message(filters.document & filters.user(MY_USER_ID))
-async def handle_document_upload(client, msg: Message):
-    if not upload_mode["song"]:
-        return
-    
-    doc = msg.document
-    if not doc.file_name or not doc.file_name.lower().endswith(('.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac')):
-        await msg.reply_text("⚠️ Please send only audio files when in song upload mode.")
-        return
-    
-    try:
-        filename = doc.file_name
-        file_path = os.path.join(song_folder, filename)
-        
-        if os.path.exists(file_path):
-            base, ext = os.path.splitext(filename)
-            filename = f"{base}_{random.randint(1000, 9999)}{ext}"
-            file_path = os.path.join(song_folder, filename)
-        
-        await msg.download(file_name=file_path)
-        file_size = f"{doc.file_size / (1024*1024):.1f} MB" if doc.file_size else "Unknown size"
-        await msg.reply_text(
-            f"✅ Audio file saved!\n📁 Filename: {filename}\n📊 Size: {file_size}"
-        )
-    except Exception as e:
-        await msg.reply_text(f"❌ Error saving audio file: {str(e)}")
-
-# --- Media Management Commands (Admin Only) ---
-@bot.on_message(filters.command("listmedia") & filters.user(MY_USER_ID))
-async def list_media_handler(client, msg: Message):
-    photos = get_photo_files()
-    songs = get_song_files()
-    
-    response = "📂 Media Collection:\n\n"
-    response += f"📸 Photos: {len(photos)} files\n"
-    if photos:
-        response += "• " + "\n• ".join(os.path.basename(p) for p in photos[:5])
-        if len(photos) > 5:
-            response += f"\n• ... and {len(photos)-5} more"
-    
-    response += "\n\n🎵 Songs: {len(songs)} files\n"
-    if songs:
-        response += "• " + "\n• ".join(os.path.basename(s) for s in songs[:5])
-        if len(songs) > 5:
-            response += f"\n• ... and {len(songs)-5} more"
-    
-    if not photos and not songs:
-        response += "Empty collection. Use /addphoto or /addsong to add media!"
-    
-    await msg.reply_text(response)
-
-@bot.on_message(filters.command("clearmedia") & filters.user(MY_USER_ID))
-async def clear_media_handler(client, msg: Message):
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🗑️ Clear Photos", callback_data="clear_photos"),
-            InlineKeyboardButton("🎵 Clear Songs", callback_data="clear_songs")
-        ],
-        [InlineKeyboardButton("🗑️ Clear All Media", callback_data="clear_all_media")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_clear")]
-    ])
-    
-    await msg.reply_text(
-        f"🗑️ Clear Media Collection\n\n"
-        f"📸 Photos: {len(get_photo_files())} files\n"
-        f"🎵 Songs: {len(get_song_files())} files\n\n"
-        f"⚠️ Warning: This action cannot be undone!",
-        reply_markup=keyboard
-    )
-
-@bot.on_callback_query(filters.regex("clear_photos") & filters.user(MY_USER_ID))
-async def clear_photos_callback(client, cq):
-    try:
-        photos = get_photo_files()
-        for photo in photos:
-            os.remove(photo)
-        await cq.message.edit_text(f"✅ Cleared {len(photos)} photos!")
-    except Exception as e:
-        await cq.message.edit_text(f"❌ Error clearing photos: {str(e)}")
-    await cq.answer()
-
-@bot.on_callback_query(filters.regex("clear_songs") & filters.user(MY_USER_ID))
-async def clear_songs_callback(client, cq):
-    try:
-        songs = get_song_files()
-        for song in songs:
-            os.remove(song)
-        await cq.message.edit_text(f"✅ Cleared {len(songs)} songs!")
-    except Exception as e:
-        await cq.message.edit_text(f"❌ Error clearing songs: {str(e)}")
-    await cq.answer()
-
-@bot.on_callback_query(filters.regex("clear_all_media") & filters.user(MY_USER_ID))
-async def clear_all_media_callback(client, cq):
-    try:
-        photos = get_photo_files()
-        songs = get_song_files()
-        for photo in photos:
-            os.remove(photo)
-        for song in songs:
-            os.remove(song)
-        total = len(photos) + len(songs)
-        await cq.message.edit_text(f"✅ Cleared all media! ({total} files removed)")
-    except Exception as e:
-        await cq.message.edit_text(f"❌ Error clearing media: {str(e)}")
-    await cq.answer()
-
-@bot.on_callback_query(filters.regex("cancel_clear"))
-async def cancel_clear_callback(client, cq):
-    await cq.message.edit_text("❌ Clear operation cancelled.")
-    await cq.answer()
-
-# --- Solitaire Handlers ---
-@bot.on_message(filters.command("solitaire"))
-async def solitaire_handler(client, msg: Message):
-    user_id = msg.from_user.id
-    
-    if user_id in solitaire_games:
-        game = solitaire_games[user_id]
-        try:
-            await game.message_obj.edit_text(
-                game.render_game(),
-                reply_markup=game.build_keyboard()
-            )
-        except:
-            game.message_obj = await msg.reply_text(
-                game.render_game(),
-                reply_markup=game.build_keyboard()
-            )
-        return
-    
-    game = SolitaireGame(user_id)
-    solitaire_games[user_id] = game
-    game.message_obj = await msg.reply_text(
-        game.render_game(),
-        reply_markup=game.build_keyboard()
-    )
-
-@bot.on_callback_query(filters.regex(r"^solitaire_"))
-async def solitaire_callback_handler(client, cq):
-    user_id = cq.from_user.id
-    if user_id not in solitaire_games:
-        await cq.answer("Start a new game with /solitaire", show_alert=True)
-        return
-    
-    game = solitaire_games[user_id]
-    data = cq.data
-    
-    if data == "solitaire_draw":
-        game.draw_from_stock()
-    elif data == "solitaire_waste":
-        if not game.waste:
-            await cq.answer("Waste pile is empty", show_alert=True)
-        else:
-            game.select_card("waste", -1, -1)
-    elif data.startswith("solitaire_foundation_"):
-        suit = data.split("_")[2]
-        if game.selected_card:
-            success, _ = game.move_card("foundation", suit)
-            if not success:
-                await cq.answer("Invalid move", show_alert=True)
-        else:
-            game.select_card("foundation", suit, -1)
-    elif data.startswith("solitaire_pile_"):
-        parts = data.split("_")
-        pile_idx = int(parts[2])
-        if parts[3] == "top":
-            if game.selected_card:
-                success, _ = game.move_card("tableau", pile_idx)
-                if not success:
-                    await cq.answer("Invalid move", show_alert=True)
-            else:
-                if game.tableau[pile_idx]:
-                    game.select_card("tableau", pile_idx, len(game.tableau[pile_idx])-1)
-        elif parts[3] == "header":
-            if game.tableau[pile_idx]:
-                card = game.tableau[pile_idx][-1]
-                suit = card[-2:]
-                game.select_card("tableau", pile_idx, len(game.tableau[pile_idx])-1)
-                success, _ = game.move_card("foundation", suit)
-                if not success:
-                    await cq.answer("Can't move to foundation", show_alert=True)
-    elif data == "solitaire_cancel":
-        game.selected_card = None
-    elif data == "solitaire_new":
-        game = SolitaireGame(user_id)
-        solitaire_games[user_id] = game
-    elif data == "solitaire_quit":
-        del solitaire_games[user_id]
-        await cq.message.edit_text("Game ended. Use /solitaire to play again.")
-        return
-    
-    try:
-        await cq.message.edit_text(
-            game.render_game(),
-            reply_markup=game.build_keyboard()
-        )
-    except Exception as e:
-        print(f"Error updating game: {e}")
-    
-    await cq.answer()
-
-# --- Tic-Tac-Toe Handlers ---
-@bot.on_message(filters.command("ttt"))
-async def ttt_handler(client, msg: Message):
-    user_id = msg.from_user.id
-    
-    if user_id in ttt_games or any(user_id in game.players for game in online_ttt_games.values()):
-        await msg.reply_text("You're already in a Tic-Tac-Toe game! Finish it first.")
-        return
-    
-    game = TicTacToeGame(user_id)
-    ttt_games[user_id] = game
-    game.message_obj = await msg.reply_text(
-        game.render_board(),
-        reply_markup=game.build_keyboard()
-    )
+# --- Multiplayer ---
 
 @bot.on_message(filters.command("onlinettt"))
-async def online_ttt_handler(client, msg: Message):
+async def online_ttt_handler(client, msg):
     user_id = msg.from_user.id
     
-    # Check if already in a game
-    if user_id in ttt_games or any(user_id in game.players for game in online_ttt_games.values()):
-        await msg.reply_text("You're already in a Tic-Tac-Toe game! Finish it first.")
+    # Check if user is already in queue
+    if user_id in waiting_queue:
+        await msg.reply_text("❌ You're already in the queue! Use /cancelqueue to leave.")
         return
     
-    if ttt_waiting_queue and ttt_waiting_queue[0] != user_id:
-        # Match with waiting player
-        p1 = ttt_waiting_queue.pop(0)
-        p2 = user_id
-        game_id = f"{p1}_{p2}_{random.randint(1000, 9999)}"
-        game = TicTacToeGame(p1, p2)
-        online_ttt_games[game_id] = game
-        
-        # Send initial game messages
-        await send_ttt_update(game_id, "Game started!")
+    if waiting_queue and waiting_queue[0] != user_id:
+        x_id, o_id = waiting_queue.pop(0), user_id
+        board = [" "] * 9
+        markup = build_board_keyboard(board, prefix=f"multi_{x_id}_{o_id}")
+        board_text = render_board_text(board)
+        m1 = await bot.send_message(x_id, f"🎮 Multiplayer started! You're ❌\n\n{board_text}", reply_markup=markup)
+        m2 = await bot.send_message(o_id, f"🎮 Multiplayer started! You're ⚫\nWaiting for ❌\n\n{board_text}", reply_markup=markup)
+        online_games[(x_id, o_id)] = {"board": board, "messages": {x_id: m1, o_id: m2}}
     else:
-        # Add to queue
-        ttt_waiting_queue.append(user_id)
-        await msg.reply_text(
-            "You're in the queue. Waiting for an opponent...\n"
-            "Use /cancelqueue to leave.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ Cancel", callback_data="ttt_cancel_queue")]
-            ])
-        )
-
-async def send_ttt_update(game_id: str, message: str = ""):
-    game = online_ttt_games.get(game_id)
-    if not game:
-        return
-    
-    for player_id in game.players:
-        game_text = game.render_board()
-        if message:
-            game_text = f"{message}\n\n{game_text}"
-        
-        keyboard = game.build_keyboard()
-        
-        if player_id in game.messages:
-            try:
-                await game.messages[player_id].edit_text(game_text, reply_markup=keyboard)
-            except:
-                game.messages[player_id] = await bot.send_message(player_id, game_text, reply_markup=keyboard)
-        else:
-            game.messages[player_id] = await bot.send_message(player_id, game_text, reply_markup=keyboard)
+        waiting_queue.append(user_id)
+        cancel_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel Queue", callback_data="cancel_queue")]
+        ])
+        await msg.reply_text("⏳ You're in the queue. Waiting for an opponent...\nUse /cancelqueue or the button below to leave the queue.", reply_markup=cancel_markup)
 
 @bot.on_message(filters.command("cancelqueue"))
-async def cancel_queue_handler(client, msg: Message):
+async def cancel_queue_handler(client, msg):
     user_id = msg.from_user.id
-    if user_id in ttt_waiting_queue:
-        ttt_waiting_queue.remove(user_id)
-        await msg.reply_text("You left the queue.")
+    if user_id in waiting_queue:
+        waiting_queue.remove(user_id)
+        await msg.reply_text("✅ You've been removed from the queue.")
     else:
-        await msg.reply_text("You're not in any queue.")
+        await msg.reply_text("❌ You're not in the queue.")
 
-@bot.on_callback_query(filters.regex("ttt_cancel_queue"))
-async def ttt_cancel_queue_callback(client, cq):
+@bot.on_callback_query(filters.regex("cancel_queue"))
+async def cancel_queue_callback_handler(client, cq):
     user_id = cq.from_user.id
-    if user_id in ttt_waiting_queue:
-        ttt_waiting_queue.remove(user_id)
-        await cq.message.edit_text("You left the queue.")
+    if user_id in waiting_queue:
+        waiting_queue.remove(user_id)
+        await cq.message.edit_text("✅ You've been removed from the queue.")
+    else:
+        await cq.answer("You're not in the queue.", show_alert=True)
     await cq.answer()
 
-@bot.on_callback_query(filters.regex(r"^ttt_"))
-async def ttt_callback_handler(client, cq):
-    user_id = cq.from_user.id
-    
-    # Check single player games
-    if user_id in ttt_games:
-        game = ttt_games[user_id]
-        data = cq.data
-        
-        if data.startswith("ttt_move_"):
-            if game.game_over or game.current_player != 0:  # Only player 1 in single player
-                await cq.answer("Not your turn!", show_alert=True)
-                return
-            
-            _, _, row, col = data.split("_")
-            row, col = int(row), int(col)
-            
-            if game.make_move(row, col):
-                if game.game_over:
-                    await cq.message.edit_text(
-                        game.render_board(),
-                        reply_markup=game.build_keyboard()
-                    )
-                else:
-                    # AI move (simple random)
-                    empty_cells = [(r, c) for r in range(3) for c in range(3) if game.board[r][c] == " "]
-                    if empty_cells:
-                        ai_row, ai_col = random.choice(empty_cells)
-                        game.make_move(ai_row, ai_col)
-                    
-                    await cq.message.edit_text(
-                        game.render_board(),
-                        reply_markup=game.build_keyboard()
-                    )
-            else:
-                await cq.answer("Invalid move!", show_alert=True)
-        
-        elif data == "ttt_new":
-            game = TicTacToeGame(user_id)
-            ttt_games[user_id] = game
-            await cq.message.edit_text(
-                game.render_board(),
-                reply_markup=game.build_keyboard()
-            )
-        
-        elif data == "ttt_quit":
-            del ttt_games[user_id]
-            await cq.message.edit_text("Game ended. Use /ttt to play again.")
-        
-        await cq.answer()
-        return
-    
-    # Check multiplayer games
-    game_id = next((gid for gid, game in online_ttt_games.items() if user_id in game.players), None)
-    if not game_id:
+@bot.on_callback_query(filters.regex(r"multi_(\d+)_(\d+)_(\d+)"))
+async def multiplayer_move_handler(client, cq):
+    x_id, o_id, move = map(int, cq.data.split("_")[1:])
+    uid = cq.from_user.id
+    game = online_games.get((x_id, o_id))
+    if not game:
         await cq.answer("Game not found", show_alert=True)
         return
-    
-    game = online_ttt_games[game_id]
-    data = cq.data
-    
-    if data.startswith("ttt_move_"):
-        if game.game_over or game.players[game.current_player] != user_id:
-            await cq.answer("Not your turn!", show_alert=True)
-            return
-        
-        _, _, row, col = data.split("_")
-        row, col = int(row), int(col)
-        
-        if game.make_move(row, col):
-            await send_ttt_update(game_id)
-        else:
-            await cq.answer("Invalid move!", show_alert=True)
-    
-    elif data == "ttt_new":
-        if game.game_over:
-            p1, p2 = game.players
-            new_game_id = f"{p1}_{p2}_{random.randint(1000, 9999)}"
-            new_game = TicTacToeGame(p1, p2)
-            online_ttt_games[new_game_id] = new_game
-            del online_ttt_games[game_id]
-            await send_ttt_update(new_game_id, "🔁 New game started!")
-        else:
-            await cq.answer("Game still in progress", show_alert=True)
-    
-    elif data == "ttt_quit":
-        if game.game_over:
-            del online_ttt_games[game_id]
-            await cq.message.edit_text("Game ended. Use /onlinettt to play again.")
-        else:
-            await cq.answer("Finish the game first!", show_alert=True)
-    
+    board = game["board"]
+    turn = "X" if board.count("X") <= board.count("O") else "O"
+    if (turn == "X" and uid != x_id) or (turn == "O" and uid != o_id):
+        await cq.answer("Not your turn", show_alert=True)
+        return
+    if board[move] != " ":
+        await cq.answer("Invalid move", show_alert=True)
+        return
+    board[move] = turn
+    text = render_board_text(board)
+    markup = build_board_keyboard(board, prefix=f"multi_{x_id}_{o_id}")
+
+    async def edit(msg_obj, txt): await msg_obj.edit_text(txt, reply_markup=markup)
+    m1, m2 = game["messages"][x_id], game["messages"][o_id]
+
+    if check_winner(board, turn):
+        del online_games[(x_id, o_id)]
+        rematch_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔁 Rematch", callback_data=f"rematch_{x_id}_{o_id}")]
+        ])
+        await edit(m1, f"{text}\n\n{turn} wins!")
+        await edit(m2, f"{text}\n\n{turn} wins!")
+        await bot.send_message(x_id, "Ask for rematch 🔁", reply_markup=rematch_markup)
+        await bot.send_message(o_id, "Ask for rematch 🔁", reply_markup=rematch_markup)
+    elif is_board_full(board):
+        del online_games[(x_id, o_id)]
+        await edit(m1, f"{text}\n\nDraw!")
+        await edit(m2, f"{text}\n\nDraw!")
+    else:
+        await edit(m1, text)
+        await edit(m2, text)
     await cq.answer()
 
+@bot.on_callback_query(filters.regex(r"rematch_(\d+)_(\d+)"))
+async def rematch_request_handler(client, cq):
+    x_id, o_id = map(int, cq.data.split("_")[1:])
+    sender = cq.from_user.id
+    key = tuple(sorted([x_id, o_id]))
+    rematch_requests.setdefault(key, set()).add(sender)
+    if len(rematch_requests[key]) == 2:
+        del rematch_requests[key]
+        board = [" "] * 9
+        markup = build_board_keyboard(board, prefix=f"multi_{x_id}_{o_id}")
+        txt = render_board_text(board)
+        m1 = await bot.send_message(x_id, f"🔁 Rematch started! You're ❌\n\n{txt}", reply_markup=markup)
+        m2 = await bot.send_message(o_id, f"🔁 Rematch started! You're ⚫\n\n{txt}", reply_markup=markup)
+        online_games[(x_id, o_id)] = {"board": board, "messages": {x_id: m1, o_id: m2}}
+    else:
+        await cq.answer("Rematch request sent. Waiting for opponent.", show_alert=True)
+
 # --- In-Game Chat ---
+
 @bot.on_message(filters.command("say") & filters.private)
 async def say_handler(client, msg: Message):
     parts = msg.text.split(maxsplit=1)
     if len(parts) != 2:
         await msg.reply_text("Usage: /say message")
         return
-    
-    user_id = msg.from_user.id
-    
-    # Check Tic-Tac-Toe games
-    for game_id, game in online_ttt_games.items():
-        if user_id in game.players:
-            opponent_id = next(p for p in game.players if p != user_id)
-            await bot.send_message(opponent_id, f"💬 Message from opponent:\n{parts[1]}")
-            await msg.reply_text("Message sent")
+    uid = msg.from_user.id
+    for (x_id, o_id), data in online_games.items():
+        if uid in (x_id, o_id):
+            peer = o_id if uid == x_id else x_id
+            await bot.send_message(peer, f"💬 Message from your opponent:\n{parts[1]}")
+            await msg.reply_text("Sent.")
             return
-    
-    # Check solitaire games (though shouldn't have opponent)
-    if user_id in solitaire_games:
-        await msg.reply_text("No opponent to message in solitaire")
-        return
-    
-    await msg.reply_text("You're not in any active game")
+    await msg.reply_text("No active game found.")
 
-# --- Greeting Management Commands (Admin Only) ---
+# --- Greeting Management Commands (Only for MY_USER_ID) ---
+
 @bot.on_message(filters.command("setmorning") & filters.user(MY_USER_ID))
 async def set_morning_handler(client, msg: Message):
     parts = msg.text.split(maxsplit=1)
@@ -802,68 +316,69 @@ async def test_greetings_handler(client, msg: Message):
     await asyncio.sleep(1)
     await msg.reply_text(f"Night: {greetings['night']}")
 
-# --- Misc Commands ---
+# --- Misc ---
+
+@bot.on_callback_query(filters.regex("noop"))
+async def noop_handler(client, cq): await cq.answer()
+
+@bot.on_message(filters.command("ttt"))
+async def ttt_handler(client, msg):
+    uid = msg.from_user.id
+    text, kb = await start_game(uid)
+    await msg.reply_text(text, reply_markup=kb)
+
+@bot.on_callback_query(filters.regex(r"ttt_\d"))
+async def ttt_cb(client, cq):
+    uid = cq.from_user.id
+    idx = int(cq.data.split("_")[1])
+    text, kb, err = await handle_move(uid, idx)
+    if err:
+        await cq.answer(err, show_alert=True)
+    else:
+        await cq.message.edit_text(text, reply_markup=kb)
+    await cq.answer()
+
 @bot.on_message(filters.command("start"))
-async def start_handler(client, msg: Message):
+async def start_handler(client, msg):
+    base_text = (
+        "Hey Dumb! 💌\n\nI'm your special bot made with love.\nCommands:\n"
+        "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
+        "/id – your ID 🔍\n/ttt – play solo TTT 🎮\n/onlinettt – play with others 🌐\n"
+        "/cancelqueue – leave matchmaking queue ❌\n/say – send message to opponent 💬"
+    )
+    
+    # Add greeting management commands only for MY_USER_ID
     if msg.from_user.id == MY_USER_ID:
-        base_text = (
-            "Hey Admin! 💌\n\nI'm your special bot.\nCommands:\n"
-            "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
-            "/id – your ID 🔍\n/solitaire – play classic solitaire 🃏\n"
-            "/ttt – play Tic-Tac-Toe (vs AI) ❌⭕️\n"
-            "/onlinettt – play Tic-Tac-Toe with a friend 🎮\n"
-            "/cancelqueue – leave matchmaking queue ❌\n/say – send message to opponent 💬\n\n"
-            "🔧 Admin Commands:\n"
+        base_text += (
+            "\n\n🔧 Greeting Management (Admin only):\n"
             "/viewgreetings – see current greetings 👀\n"
             "/setmorning – change morning message 🌅\n"
             "/setafternoon – change afternoon message 🌞\n"
             "/setnight – change night message 🌙\n"
             "/resetgreetings – reset to defaults 🔄\n"
-            "/testgreetings – test all greetings 🧪\n\n"
-            "📂 Media Management:\n"
-            "/addphoto – enable photo upload mode 📸\n"
-            "/addsong – enable song upload mode 🎵\n"
-            "/listmedia – view media collection 📋\n"
-            "/clearmedia – clear media files 🗑️\n"
-            "/done or /cancel – exit upload mode ✅"
-        )
-    else:
-        base_text = (
-            "Hey there! 💌\n\nI'm a special bot.\nCommands:\n"
-            "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
-            "/id – your ID 🔍\n/solitaire – play classic solitaire 🃏\n"
-            "/ttt – play Tic-Tac-Toe (vs AI) ❌⭕️\n"
-            "/onlinettt – play Tic-Tac-Toe with a friend 🎮\n"
-            "/cancelqueue – leave matchmaking queue ❌\n/say – send message to opponent 💬"
+            "/testgreetings – test all greetings 🧪"
         )
     
     await msg.reply_text(base_text)
 
 @bot.on_message(filters.command("quote"))
-async def quote_handler(client, msg: Message): 
-    await msg.reply_text(random.choice(quotes))
+async def quote_handler(client, msg): await msg.reply_text(random.choice(quotes))
 
 @bot.on_message(filters.command(["photo", "vibe"]))
-async def photo_handler(client, msg: Message):
-    photo_files = get_photo_files()
-    if photo_files: 
-        await msg.reply_photo(random.choice(photo_files))
-    else: 
-        await msg.reply_text("No photos available! Ask admin to add some. 📸")
+async def photo_handler(client, msg):
+    if photo_files: await msg.reply_photo(random.choice(photo_files))
+    else: await msg.reply_text("No photos!"))
 
 @bot.on_message(filters.command("music"))
-async def music_handler(client, msg: Message):
-    song_files = get_song_files()
-    if song_files: 
-        await msg.reply_audio(audio=random.choice(song_files), caption="Vibe 🎧")
-    else: 
-        await msg.reply_text("No songs available! Ask admin to add some. 🎵")
+async def music_handler(client, msg):
+    if song_files: await msg.reply_audio(audio=random.choice(song_files), caption="Vibe 🎧")
+    else: await msg.reply_text("No songs!"))
 
 @bot.on_message(filters.command("id"))
-async def id_handler(client, msg: Message): 
-    await msg.reply_text(f"Your user ID is: {msg.from_user.id}")
+async def id_handler(client, msg): await msg.reply_text(f"Your user ID is: {msg.from_user.id}")
 
 # --- Daily Messages ---
+
 async def send_good_morning(): 
     await bot.send_message(BESTIE_USER_ID, greetings["morning"])
 
@@ -878,6 +393,7 @@ scheduler.add_job(send_good_afternoon, 'cron', hour=13, minute=30)
 scheduler.add_job(send_good_night, 'cron', hour=22, minute=0)
 
 # --- FastAPI Webhook ---
+
 @app.post(f"/{BOT_TOKEN}")
 async def telegram_webhook(request: Request):
     update_data = await request.json()
@@ -886,8 +402,7 @@ async def telegram_webhook(request: Request):
     return PlainTextResponse("ok")
 
 @app.get("/")
-async def root(): 
-    return {"message": "Bestie Bot is running!"}
+async def root(): return {"message": "Bestie Bot is running!"}
 
 @app.on_event("startup")
 async def startup_event():
