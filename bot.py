@@ -559,4 +559,257 @@ async def multiplayer_move_handler(client: Client, cq: CallbackQuery):
     markup = build_board_keyboard(board, prefix=f"multi_{x_id}_{o_id}")
 
     async def edit_msg(msg_obj, txt):
-        await msg_obj.edit_text(txt, reply_markup=marku
+        await msg_obj.edit_text(txt, reply_markup=markup)
+    
+    m1, m2 = game["messages"][x_id], game["messages"][o_id]
+
+    if check_winner(board, turn):
+        del online_games[game_key]
+        rematch_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔁 Rematch", callback_data=f"rematch_{x_id}_{o_id}")]
+        ])
+        await edit_msg(m1, f"{text}\n\n{turn} wins!")
+        await edit_msg(m2, f"{text}\n\n{turn} wins!")
+        await bot.send_message(x_id, "Ask for rematch 🔁", reply_markup=rematch_markup)
+        await bot.send_message(o_id, "Ask for rematch 🔁", reply_markup=rematch_markup)
+    elif is_board_full(board):
+        del online_games[game_key]
+        await edit_msg(m1, f"{text}\n\nDraw!")
+        await edit_msg(m2, f"{text}\n\nDraw!")
+    else:
+        await edit_msg(m1, text)
+        await edit_msg(m2, text)
+    
+    await cq.answer()
+
+@bot.on_callback_query(filters.regex(r"rematch_(\d+)_(\d+)"))
+async def rematch_request_handler(client: Client, cq: CallbackQuery):
+    x_id, o_id = map(int, cq.data.split("_")[1:])
+    sender = cq.from_user.id
+    key = tuple(sorted([x_id, o_id]))
+    
+    rematch_requests.setdefault(key, set()).add(sender)
+    
+    if len(rematch_requests[key]) == 2:
+        del rematch_requests[key]
+        board = [" "] * 9
+        markup = build_board_keyboard(board, prefix=f"multi_{x_id}_{o_id}")
+        txt = render_board_text(board)
+        
+        m1 = await bot.send_message(
+            x_id,
+            f"🔁 Rematch started! You're ❌\n\n{txt}",
+            reply_markup=markup
+        )
+        m2 = await bot.send_message(
+            o_id,
+            f"🔁 Rematch started! You're ⚫\n\n{txt}",
+            reply_markup=markup
+        )
+        
+        online_games[(x_id, o_id)] = {
+            "board": board,
+            "messages": {x_id: m1, o_id: m2}
+        }
+    else:
+        await cq.answer("Rematch request sent. Waiting for opponent.", show_alert=True)
+
+# --- In-Game Chat ---
+@bot.on_message(filters.command("say") & filters.private)
+async def say_handler(client: Client, msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) != 2:
+        await msg.reply_text("Usage: /say message")
+        return
+    
+    uid = msg.from_user.id
+    for (x_id, o_id), data in online_games.items():
+        if uid in (x_id, o_id):
+            peer = o_id if uid == x_id else x_id
+            await bot.send_message(peer, f"💬 Message from your opponent:\n{parts[1]}")
+            await msg.reply_text("Sent.")
+            return
+    
+    await msg.reply_text("No active game found.")
+
+# --- Greeting Management ---
+@bot.on_message(filters.command("setmorning") & filters.user(MY_USER_ID))
+async def set_morning_handler(client: Client, msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) != 2:
+        await msg.reply_text("Usage: /setmorning Your new morning message")
+        return
+    
+    greetings["morning"] = parts[1]
+    await msg.reply_text(f"✅ Morning greeting updated to:\n{parts[1]}")
+
+@bot.on_message(filters.command("setafternoon") & filters.user(MY_USER_ID))
+async def set_afternoon_handler(client: Client, msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) != 2:
+        await msg.reply_text("Usage: /setafternoon Your new afternoon message")
+        return
+    
+    greetings["afternoon"] = parts[1]
+    await msg.reply_text(f"✅ Afternoon greeting updated to:\n{parts[1]}")
+
+@bot.on_message(filters.command("setnight") & filters.user(MY_USER_ID))
+async def set_night_handler(client: Client, msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) != 2:
+        await msg.reply_text("Usage: /setnight Your new night message")
+        return
+    
+    greetings["night"] = parts[1]
+    await msg.reply_text(f"✅ Night greeting updated to:\n{parts[1]}")
+
+@bot.on_message(filters.command("viewgreetings") & filters.user(MY_USER_ID))
+async def view_greetings_handler(client: Client, msg: Message):
+    greeting_text = "🌟 Current Greetings:\n\n"
+    greeting_text += f"🌅 Morning: {greetings['morning']}\n\n"
+    greeting_text += f"🌞 Afternoon: {greetings['afternoon']}\n\n"
+    greeting_text += f"🌙 Night: {greetings['night']}\n\n"
+    greeting_text += "Use /setmorning, /setafternoon, or /setnight to change them."
+    await msg.reply_text(greeting_text)
+
+@bot.on_message(filters.command("resetgreetings") & filters.user(MY_USER_ID))
+async def reset_greetings_handler(client: Client, msg: Message):
+    greetings.update({
+        "morning": "🌞 Good morning bestie have a nice day! 💖",
+        "afternoon": "🌞 Good Afternoon Kritika Eat well! 💖🎶",
+        "night": "🌙 Good night Dumb Jigs I Like u the most 💫"
+    })
+    await msg.reply_text("✅ All greetings have been reset to default!")
+
+@bot.on_message(filters.command("testgreetings") & filters.user(MY_USER_ID))
+async def test_greetings_handler(client: Client, msg: Message):
+    await msg.reply_text("🧪 Testing all greetings:")
+    await asyncio.sleep(1)
+    await msg.reply_text(f"Morning: {greetings['morning']}")
+    await asyncio.sleep(1)
+    await msg.reply_text(f"Afternoon: {greetings['afternoon']}")
+    await asyncio.sleep(1)
+    await msg.reply_text(f"Night: {greetings['night']}")
+
+# --- Media Handlers ---
+@bot.on_message(filters.command(["photo", "vibe"]))
+async def photo_handler(client: Client, msg: Message):
+    try:
+        photo_files = [
+            os.path.join(PHOTO_FOLDER, f) 
+            for f in os.listdir(PHOTO_FOLDER) 
+            if f.lower().endswith(('.jpg', '.jpeg', '.png'))
+        ]
+        if photo_files:
+            await msg.reply_photo(random.choice(photo_files))
+        else:
+            await msg.reply_text("No photos available!")
+    except Exception as e:
+        await msg.reply_text(f"❌ Error: {str(e)}")
+
+@bot.on_message(filters.command("music"))
+async def music_handler(client: Client, msg: Message):
+    try:
+        song_files = [
+            os.path.join(SONG_FOLDER, f)
+            for f in os.listdir(SONG_FOLDER)
+            if f.lower().endswith(('.mp3', '.wav', '.m4a'))
+        ]
+        if song_files:
+            await msg.reply_audio(
+                audio=random.choice(song_files),
+                caption="Vibe 🎧"
+            )
+        else:
+            await msg.reply_text("No songs available!")
+    except Exception as e:
+        await msg.reply_text(f"❌ Error: {str(e)}")
+
+# --- Daily Messages ---
+async def send_good_morning():
+    await bot.send_message(BESTIE_USER_ID, greetings["morning"])
+
+async def send_good_afternoon():
+    await bot.send_message(BESTIE_USER_ID, greetings["afternoon"])
+
+async def send_good_night():
+    await bot.send_message(BESTIE_USER_ID, greetings["night"])
+
+# Schedule morning question at 12:00 AM (midnight)
+scheduler.add_job(send_morning_question, 'cron', hour=0, minute=0)
+# Schedule evening question at 6:00 PM
+scheduler.add_job(send_evening_question, 'cron', hour=18, minute=0)
+# Schedule greetings
+scheduler.add_job(send_good_morning, 'cron', hour=6, minute=0)
+scheduler.add_job(send_good_afternoon, 'cron', hour=13, minute=30)
+scheduler.add_job(send_good_night, 'cron', hour=22, minute=0)
+
+# --- Basic Commands ---
+@bot.on_message(filters.command("start"))
+async def start_handler(client: Client, msg: Message):
+    base_text = (
+        "Hey Dumb! 💌\n\nI'm your special bot made with love.\nCommands:\n"
+        "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
+        "/id – your ID 🔍\n/ttt – play solo TTT 🎮\n/onlinettt – play with others 🌐\n"
+        "/dailyq – daily questions (special users only) 📝\n"
+        "/cancelqueue – leave matchmaking queue ❌\n/say – send message to opponent 💬"
+    )
+    
+    if msg.from_user.id == MY_USER_ID:
+        base_text += (
+            "\n\n🔧 Admin Commands:\n"
+            "/getcode – get current bot code 📄\n"
+            "/updatecode – update bot code (reply to file) 🔄\n"
+            "/viewgreetings – see current greetings 👀\n"
+            "/setmorning – change morning message 🌅\n"
+            "/setafternoon – change afternoon message 🌞\n"
+            "/setnight – change night message 🌙\n"
+            "/resetgreetings – reset to defaults 🔄\n"
+            "/testgreetings – test all greetings 🧪"
+        )
+    
+    await msg.reply_text(base_text)
+
+@bot.on_message(filters.command("quote"))
+async def quote_handler(client: Client, msg: Message):
+    await msg.reply_text(random.choice(quotes))
+
+@bot.on_message(filters.command("id"))
+async def id_handler(client: Client, msg: Message):
+    await msg.reply_text(f"Your user ID is: {msg.from_user.id}")
+
+@bot.on_callback_query(filters.regex("noop"))
+async def noop_handler(client: Client, cq: CallbackQuery):
+    await cq.answer()
+
+# --- FastAPI Webhook ---
+@app.post(f"/{BOT_TOKEN}")
+async def telegram_webhook(request: Request):
+    update_data = await request.json()
+    update = Update.de_json(update_data, bot)
+    await bot.process_update(update)
+    return PlainTextResponse("ok")
+
+@app.get("/")
+async def root():
+    return {"message": "Bestie Bot is running!"}
+
+# --- Startup/Shutdown Events ---
+@app.on_event("startup")
+async def startup_event():
+    await bot.start()
+    scheduler.start()
+    async with httpx.AsyncClient() as client:
+        await client.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
+            data={"url": f"{WEBHOOK_URL}/{BOT_TOKEN}"}
+        )
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await bot.stop()
+    scheduler.shutdown()
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
