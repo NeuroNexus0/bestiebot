@@ -102,8 +102,12 @@ online_games: Dict[Tuple[int, int], Dict] = {}
 rematch_requests: Dict[Tuple[int, int], set] = {}
 
 # --- Initialize Folders ---
-os.makedirs(PHOTO_FOLDER, exist_ok=True)
-os.makedirs(SONG_FOLDER, exist_ok=True)
+try:
+    os.makedirs(PHOTO_FOLDER, exist_ok=True)
+    os.makedirs(SONG_FOLDER, exist_ok=True)
+except Exception as e:
+    print(f"Failed to create folders: {e}")
+    sys.exit(1)
 
 # --- Helper Functions ---
 def render_board_text(board: List[str]) -> str:
@@ -188,13 +192,16 @@ def get_new_morning_question() -> str:
     """Get random questions from the morning pool"""
     if not questions_morning:
         return "How are you feeling today?"
-    return random.sample(questions_morning, min(morning_question_count, len(questions_morning)))
+    questions = random.sample(questions_morning, min(morning_question_count, len(questions_morning)))
+    return "\n".join(questions) if morning_question_count > 1 else questions[0]
 
 def get_new_evening_question() -> str:
+  def get_new_evening_question() -> str:
     """Get random questions from the evening pool"""
     if not questions_evening:
         return "What was the highlight of your day?"
-    return random.sample(questions_evening, min(evening_question_count, len(questions_evening)))
+    questions = random.sample(questions_evening, min(evening_question_count, len(questions_evening)))
+    return "\n".join(questions) if evening_question_count > 1 else questions[0]
 
 async def send_morning_question():
     """Send morning question to bestie user at scheduled time"""
