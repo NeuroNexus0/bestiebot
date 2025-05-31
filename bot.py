@@ -1,11 +1,9 @@
 # --- Imports ---
-
 import os
 import random
 import asyncio
 import pytz
 import httpx
-
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Update, Message
 from fastapi import FastAPI, Request
@@ -13,7 +11,6 @@ from starlette.responses import PlainTextResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # --- Environment Setup ---
-
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -28,7 +25,6 @@ BESTIE_USER_ID = 5672706639
 MY_USER_ID = 7590978422
 
 # --- Content Pools ---
-
 quotes = [
     "You're not just a star, you're my whole sky. ✨",
     "Your smile makes my day every time 😊",
@@ -65,7 +61,6 @@ def get_song_files():
 upload_mode = {"photo": False, "song": False}
 
 # --- Media Upload Handlers ---
-
 @bot.on_message(filters.command("addphoto") & filters.user([MY_USER_ID]))
 async def add_photo_mode_handler(client, msg: Message):
     """Enable photo upload mode"""
@@ -293,29 +288,33 @@ async def cancel_clear_callback(client, cq):
     await cq.message.edit_text("❌ Clear operation cancelled.")
     await cq.answer()
 
-# --- Solitaire Game Logic ---
-
-solitaire_games = {}  # game_id: game_data
-solitaire_waiting_queue = []
-solitaire_rematch_requests = {}  # For rematch functionality
+# --- Enhanced Solitaire Game Logic ---
+solitaire_games = {}  # user_id: game_data
 
 class SolitaireGame:
-    def __init__(self, p1_id, p2_id):
-        self.players = {p1_id: {"hand": [], "score": 0}, p2_id: {"hand": [], "score": 0}}
+    def __init__(self, user_id):
+        self.user_id = user_id
         self.deck = self.create_deck()
-        self.discard_pile = []
-        self.current_turn = p1_id
-        self.game_over = False
-        self.winner = None
-        self.messages = {}  # player_id: message_object
-        self.game_id = f"{p1_id}_{p2_id}_{random.randint(1000, 9999)}"
+        self.foundations = {suit: [] for suit in ["♠️", "♥️", "♦️", "♣️"]}
+        self.tableau = [[] for _ in range(7)]  # 7 piles
+        self.stock = []
+        self.waste = []
+        self.selected_card = None
+        self.selected_pile = None
+        self.message = None
+        self.message_obj = None
         
-        # Deal 7 cards to each player
-        for player_id in self.players:
-            self.players[player_id]["hand"] = [self.deck.pop() for _ in range(7)]
+        # Deal cards to tableau
+        for i in range(7):
+            for j in range(i, 7):
+                card = self.deck.pop()
+                if j == i:  # Last card in each pile is face up
+                    self.tableau[j].append(card)
+                else:
+                    self.tableau[j].append(f"❓{card}")  # Face down
         
-        # Start discard pile
-        self.discard_pile.append(self.deck.pop())
+        # Remaining cards go to stock
+        self.stock = self.deck
     
     def create_deck(self):
         suits = ["♠️", "♥️", "♦️", "♣️"]
@@ -328,338 +327,395 @@ class SolitaireGame:
         value = card[:-2]  # Remove suit emoji
         if value == "A":
             return 1
-        elif value in ["J", "Q", "K"]:
-            return 10
+        elif value == "J":
+            return 11
+        elif value == "Q":
+            return 12
+        elif value == "K":
+            return 13
         else:
             return int(value)
     
-    def can_play_card(self, card):
-        if not self.discard_pile:
+    def get_card_color(self, card):
+        suit = card[-2:]
+        return "red" if suit in ["♥️", "♦️"] else "black"
+    
+    def is_valid_sequence(self, card1, card2):
+        """Check if card2 can be placed on card1 in tableau"""
+        val1 = self.get_card_value(card1)
+        val2 = self.get_card_value(card2)
+        color1 = self.get_card_color(card1)
+        color2 = self.get_card_color(card2)
+        
+        return (val1 == val2 + 1) and (color1 != color2)
+    
+    def is_valid_foundation_move(self, card, suit):
+        """Check if card can be placed on foundation"""
+        foundation = self.foundations[suit]
+        if not foundation:
+            return self.get_card_value(card) == 1  # Only Ace can start
+        
+        top_card = foundation[-1]
+        return (self.get_card_value(card) == (self.get_card_value(top_card) + 1)) and (card[-2:] == top_card[-2:])
+    
+    def draw_from_stock(self):
+        if not self.stock and not self.waste:
+            return False
+        
+        if not self.stock:
+            # Recycle waste back to stock (but don't shuffle)
+            self.stock = self.waste[::-1]
+            self.waste = []
+        
+        # Draw 3 cards (or remaining if less than 3)
+        num_to_draw = min(3, len(self.stock))
+        for _ in range(num_to_draw):
+            self.waste.append(self.stock.pop())
+        
+        return True
+    
+    def select_card(self, pile_type, pile_index, card_index):
+        """Select a card for moving"""
+        if pile_type == "tableau":
+            pile = self.tableau[pile_index]
+            if card_index >= len(pile):
+                return False
+            card = pile[card_index]
+            if card.startswith("❓"):
+                return False  # Can't select face-down cards
+            
+            self.selected_card = card
+            self.selected_pile = (pile_type, pile_index, card_index)
             return True
         
-        top_card = self.discard_pile[-1]
-        top_suit = top_card[-2:]
-        top_value = top_card[:-2]
-        card_suit = card[-2:]
-        card_value = card[:-2]
+        elif pile_type == "waste":
+            if not self.waste:
+                return False
+            self.selected_card = self.waste[-1]
+            self.selected_pile = (pile_type, -1, -1)
+            return True
         
-        return card_suit == top_suit or card_value == top_value
+        elif pile_type == "foundation":
+            foundation = self.foundations[pile_index]
+            if not foundation:
+                return False
+            self.selected_card = foundation[-1]
+            self.selected_pile = (pile_type, pile_index, -1)
+            return True
+        
+        return False
     
-    def play_card(self, player_id, card):
-        if player_id != self.current_turn:
-            return False, "Not your turn!"
+    def move_card(self, pile_type, pile_index):
+        """Move selected card to destination pile"""
+        if not self.selected_card:
+            return False, "No card selected"
         
-        if card not in self.players[player_id]["hand"]:
-            return False, "You don't have this card!"
+        card = self.selected_card
         
-        if not self.can_play_card(card):
-            return False, "Card doesn't match suit or value!"
-        
-        # Play the card
-        self.players[player_id]["hand"].remove(card)
-        self.discard_pile.append(card)
-        
-        # Check if player won
-        if len(self.players[player_id]["hand"]) == 0:
-            self.game_over = True
-            self.winner = player_id
-            return True, "You won! 🎉"
-        
-        # Switch turns
-        other_player = [pid for pid in self.players if pid != player_id][0]
-        self.current_turn = other_player
-        
-        return True, "Card played successfully!"
-    
-    def draw_card(self, player_id):
-        if player_id != self.current_turn:
-            return False, "Not your turn!"
-        
-        if not self.deck:
-            # Reshuffle discard pile into deck (keep top card)
-            if len(self.discard_pile) <= 1:
-                return False, "No more cards available!"
+        if pile_type == "tableau":
+            # Moving to tableau pile
+            dest_pile = self.tableau[pile_index]
             
-            top_card = self.discard_pile.pop()
-            self.deck = self.discard_pile[:]
-            random.shuffle(self.deck)
-            self.discard_pile = [top_card]
+            if not dest_pile:
+                # Empty pile - only Kings can be placed
+                if self.get_card_value(card) == 13:
+                    self._complete_move(pile_type, pile_index)
+                    return True, "King placed on empty pile"
+                return False, "Only Kings can be placed on empty piles"
+            
+            top_card = dest_pile[-1]
+            if self.is_valid_sequence(top_card, card):
+                self._complete_move(pile_type, pile_index)
+                return True, "Card moved successfully"
+            return False, "Invalid move - cards must alternate colors and decrease in value"
         
-        card = self.deck.pop()
-        self.players[player_id]["hand"].append(card)
+        elif pile_type == "foundation":
+            # Moving to foundation
+            suit = card[-2:]
+            if self.is_valid_foundation_move(card, suit):
+                self._complete_move("foundation", suit)
+                return True, "Card moved to foundation"
+            return False, "Invalid foundation move"
         
-        # Switch turns after drawing
-        other_player = [pid for pid in self.players if pid != player_id][0]
-        self.current_turn = other_player
-        
-        return True, f"Drew: {card}"
+        return False, "Invalid destination"
     
-    def get_hand_display(self, player_id):
-        hand = self.players[player_id]["hand"]
-        if len(hand) > 10:  # Limit display for large hands
-            return " ".join(hand[:10]) + f" ... (+{len(hand)-10} more)"
-        return " ".join(hand)
+    def _complete_move(self, dest_type, dest_index):
+        """Complete the move operation"""
+        src_type, src_index, card_index = self.selected_pile
+        
+        if src_type == "tableau":
+            # Move all cards from the selected index onward
+            cards_to_move = self.tableau[src_index][card_index:]
+            self.tableau[src_index] = self.tableau[src_index][:card_index]
+            
+            # Reveal the next card if it was face down
+            if self.tableau[src_index] and self.tableau[src_index][-1].startswith("❓"):
+                hidden_card = self.tableau[src_index][-1][1:]
+                self.tableau[src_index][-1] = hidden_card
+            
+            if dest_type == "tableau":
+                self.tableau[dest_index].extend(cards_to_move)
+            else:  # foundation
+                self.foundations[dest_index].extend(cards_to_move)
+        
+        elif src_type == "waste":
+            card = self.waste.pop()
+            if dest_type == "tableau":
+                self.tableau[dest_index].append(card)
+            else:  # foundation
+                self.foundations[dest_index].append(card)
+        
+        elif src_type == "foundation":
+            card = self.foundations[src_index].pop()
+            if dest_type == "tableau":
+                self.tableau[dest_index].append(card)
+            else:  # foundation
+                self.foundations[dest_index].append(card)
+        
+        self.selected_card = None
+        self.selected_pile = None
     
-    def build_game_keyboard(self, player_id):
-        hand = self.players[player_id]["hand"]
+    def check_win(self):
+        """Check if all foundations are complete"""
+        for suit, foundation in self.foundations.items():
+            if not foundation or self.get_card_value(foundation[-1]) != 13:
+                return False
+        return True
+    
+    def render_game(self):
+        """Create a text representation of the game state"""
+        # Foundations
+        foundation_row = " ".join(
+            f"{suit}: {foundation[-1] if foundation else '--'}"
+            for suit, foundation in self.foundations.items()
+        )
+        
+        # Stock and Waste
+        stock_waste = f"Stock: {len(self.stock)} cards | Waste: {self.waste[-1] if self.waste else '--'}"
+        
+        # Tableau
+        tableau_rows = []
+        max_pile_height = max(len(pile) for pile in self.tableau)
+        
+        for i in range(max_pile_height):
+            row = []
+            for pile in self.tableau:
+                if i < len(pile):
+                    card = pile[i]
+                    if card.startswith("❓"):
+                        row.append("🂠")  # Face down card
+                    else:
+                        row.append(card)
+                else:
+                    row.append("  ")
+            tableau_rows.append(" ".join(row))
+        
+        # Selected card info
+        selected_info = ""
+        if self.selected_card:
+            selected_info = f"\n\nSelected: {self.selected_card}"
+        
+        # Game status
+        status = ""
+        if self.check_win():
+            status = "\n\n🎉 YOU WIN! 🎉"
+        
+        return (
+            "🃏 SOLITAIRE 🃏\n\n"
+            f"{foundation_row}\n"
+            f"{stock_waste}\n\n"
+            "Tableau:\n" + "\n".join(tableau_rows) +
+            selected_info + status
+        )
+    
+    def build_keyboard(self):
+        """Build interactive keyboard for the game"""
         keyboard = []
         
-        # Show playable cards first
-        playable_cards = [card for card in hand if self.can_play_card(card)]
-        other_cards = [card for card in hand if not self.can_play_card(card)]
+        # Stock/Waste row
+        stock_btn = InlineKeyboardButton("🂠 Draw", callback_data="solitaire_draw")
+        waste_btn = InlineKeyboardButton(f"Waste: {'🂮' if self.waste else '🂠'}", 
+                                       callback_data="solitaire_waste")
+        keyboard.append([stock_btn, waste_btn])
         
-        # Create rows of card buttons (3 per row)
-        all_cards = playable_cards + other_cards
-        for i in range(0, len(all_cards), 3):
-            row = []
-            for j in range(3):
-                if i + j < len(all_cards):
-                    card = all_cards[i + j]
-                    prefix = "✅" if card in playable_cards else "❌"
-                    row.append(InlineKeyboardButton(
-                        f"{prefix}{card}", 
-                        callback_data=f"solitaire_play_{player_id}_{card}"
-                    ))
-            keyboard.append(row)
+        # Foundations row
+        foundation_btns = []
+        for suit in ["♠️", "♥️", "♦️", "♣️"]:
+            top_card = self.foundations[suit][-1] if self.foundations[suit] else suit
+            foundation_btns.append(
+                InlineKeyboardButton(f"F: {top_card}", 
+                                   callback_data=f"solitaire_foundation_{suit}")
+            )
+        keyboard.append(foundation_btns)
         
-        # Add draw card button
-        keyboard.append([InlineKeyboardButton("🃏 Draw Card", callback_data=f"solitaire_draw_{player_id}")])
+        # Tableau headers
+        header_btns = [
+            InlineKeyboardButton(f"Pile {i+1}", callback_data=f"solitaire_pile_{i}_header")
+            for i in range(7)
+        ]
+        keyboard.append(header_btns)
         
-        # Add in-game chat button
-        keyboard.append([InlineKeyboardButton("💬 Send Message", callback_data=f"solitaire_chat_{player_id}")])
+        # Tableau cards (show top cards)
+        top_card_btns = []
+        for i, pile in enumerate(self.tableau):
+            if pile:
+                card = pile[-1]
+                if card.startswith("❓"):
+                    btn_text = "🂠"
+                else:
+                    btn_text = card
+                top_card_btns.append(
+                    InlineKeyboardButton(btn_text, 
+                                       callback_data=f"solitaire_pile_{i}_top")
+                )
+            else:
+                top_card_btns.append(
+                    InlineKeyboardButton("🂠", 
+                                       callback_data=f"solitaire_pile_{i}_top")
+                )
+        keyboard.append(top_card_btns)
         
-        # Add rematch button if game over
-        if self.game_over:
-            keyboard.append([InlineKeyboardButton("🔁 Rematch", callback_data=f"solitaire_rematch_{player_id}")])
+        # Action buttons
+        if self.selected_card:
+            keyboard.append([
+                InlineKeyboardButton("↩️ Cancel", callback_data="solitaire_cancel"),
+                InlineKeyboardButton("♻️ New Game", callback_data="solitaire_new")
+            ])
+        else:
+            keyboard.append([
+                InlineKeyboardButton("♻️ New Game", callback_data="solitaire_new"),
+                InlineKeyboardButton("❌ Quit", callback_data="solitaire_quit")
+            ])
         
         return InlineKeyboardMarkup(keyboard)
 
 # --- Solitaire Handlers ---
-
 @bot.on_message(filters.command("solitaire"))
 async def solitaire_handler(client, msg):
     user_id = msg.from_user.id
     
-    # Check if user is already in queue
-    if user_id in solitaire_waiting_queue:
-        await msg.reply_text("❌ You're already in the solitaire queue! Use /cancelsolitaire to leave.")
-        return
-    
     # Check if user is already in a game
-    for game_id, game in solitaire_games.items():
-        if user_id in game.players:
-            await msg.reply_text("❌ You're already in a solitaire game! Finish it first.")
-            return
-    
-    if solitaire_waiting_queue and solitaire_waiting_queue[0] != user_id:
-        # Match with waiting player
-        p1_id = solitaire_waiting_queue.pop(0)
-        p2_id = user_id
-        
-        game = SolitaireGame(p1_id, p2_id)
-        solitaire_games[game.game_id] = game
-        
-        # Send game messages to both players
-        await send_solitaire_update(game.game_id, "🃏 Solitaire game started!")
-        
-    else:
-        # Add to queue
-        solitaire_waiting_queue.append(user_id)
-        cancel_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Cancel Queue", callback_data="cancel_solitaire_queue")]
-        ])
-        await msg.reply_text(
-            "🃏 You're in the solitaire queue. Waiting for an opponent...\n"
-            "Use /cancelsolitaire or the button below to leave the queue.", 
-            reply_markup=cancel_markup
-        )
-
-@bot.on_message(filters.command("cancelsolitaire"))
-async def cancel_solitaire_handler(client, msg):
-    user_id = msg.from_user.id
-    if user_id in solitaire_waiting_queue:
-        solitaire_waiting_queue.remove(user_id)
-        await msg.reply_text("✅ You've been removed from the solitaire queue.")
-    else:
-        await msg.reply_text("❌ You're not in the solitaire queue.")
-
-@bot.on_callback_query(filters.regex("cancel_solitaire_queue"))
-async def cancel_solitaire_queue_callback(client, cq):
-    user_id = cq.from_user.id
-    if user_id in solitaire_waiting_queue:
-        solitaire_waiting_queue.remove(user_id)
-        await cq.message.edit_text("✅ You've been removed from the solitaire queue.")
-    else:
-        await cq.answer("You're not in the queue.", show_alert=True)
-    await cq.answer()
-
-async def send_solitaire_update(game_id, message=""):
-    game = solitaire_games.get(game_id)
-    if not game:
-        return
-    
-    for player_id in game.players:
+    if user_id in solitaire_games:
+        game = solitaire_games[user_id]
         try:
-            other_player = [pid for pid in game.players if pid != player_id][0]
-            
-            game_text = f"🃏 **Solitaire Game**\n\n"
-            if message:
-                game_text += f"{message}\n\n"
-            
-            game_text += f"**Top Card:** {game.discard_pile[-1] if game.discard_pile else 'None'}\n"
-            game_text += f"**Cards Left:** You: {len(game.players[player_id]['hand'])}, Opponent: {len(game.players[other_player]['hand'])}\n"
-            game_text += f"**Turn:** {'Your turn' if game.current_turn == player_id else 'Opponent turn'}\n\n"
-            
-            if game.game_over:
-                if game.winner == player_id:
-                    game_text += "🎉 **You Won!** 🎉"
-                else:
-                    game_text += "😔 **You Lost!** Better luck next time."
-            
-            game_text += f"\n\n**Your Hand:** {game.get_hand_display(player_id)}\n"
-            game_text += "✅ = Can play, ❌ = Can't play"
-            
-            keyboard = game.build_game_keyboard(player_id)
-            
-            if player_id in game.messages:
-                await game.messages[player_id].edit_text(game_text, reply_markup=keyboard)
+            await game.message_obj.edit_text(
+                game.render_game(),
+                reply_markup=game.build_keyboard()
+            )
+        except:
+            # If message editing fails, send a new one
+            game.message_obj = await msg.reply_text(
+                game.render_game(),
+                reply_markup=game.build_keyboard()
+            )
+        return
+    
+    # Start new game
+    game = SolitaireGame(user_id)
+    solitaire_games[user_id] = game
+    
+    # Send initial game state
+    game.message_obj = await msg.reply_text(
+        game.render_game(),
+        reply_markup=game.build_keyboard()
+    )
+
+@bot.on_callback_query(filters.regex(r"^solitaire_"))
+async def solitaire_callback_handler(client, cq):
+    user_id = cq.from_user.id
+    if user_id not in solitaire_games:
+        await cq.answer("No active game found. Start a new one with /solitaire", show_alert=True)
+        return
+    
+    game = solitaire_games[user_id]
+    data = cq.data
+    
+    if data == "solitaire_draw":
+        game.draw_from_stock()
+        await cq.answer("Cards drawn from stock")
+    
+    elif data == "solitaire_waste":
+        if not game.waste:
+            await cq.answer("Waste pile is empty", show_alert=True)
+        else:
+            game.select_card("waste", -1, -1)
+            await cq.answer(f"Selected: {game.waste[-1]}")
+    
+    elif data.startswith("solitaire_foundation_"):
+        suit = data.split("_")[2]
+        if game.selected_card:
+            success, message = game.move_card("foundation", suit)
+            await cq.answer(message, show_alert=not success)
+        else:
+            # Try to select from foundation
+            if game.select_card("foundation", suit, -1):
+                await cq.answer(f"Selected: {game.selected_card}")
             else:
-                msg = await bot.send_message(player_id, game_text, reply_markup=keyboard)
-                game.messages[player_id] = msg
-                
-        except Exception as e:
-            print(f"Error sending solitaire update to {player_id}: {e}")
-
-@bot.on_callback_query(filters.regex(r"solitaire_play_(\d+)_(.+)"))
-async def solitaire_play_callback(client, cq):
-    player_id = int(cq.data.split("_")[2])
-    card = "_".join(cq.data.split("_")[3:])  # Handle multi-part card names
+                await cq.answer("Foundation is empty", show_alert=True)
     
-    if cq.from_user.id != player_id:
-        await cq.answer("This is not your game!", show_alert=True)
+    elif data.startswith("solitaire_pile_"):
+        parts = data.split("_")
+        pile_idx = int(parts[2])
+        card_type = parts[3]
+        
+        if card_type == "top":
+            if game.selected_card:
+                # Trying to move selected card to this pile
+                success, message = game.move_card("tableau", pile_idx)
+                await cq.answer(message, show_alert=not success)
+            else:
+                # Selecting top card of this pile
+                if game.tableau[pile_idx]:
+                    if game.select_card("tableau", pile_idx, len(game.tableau[pile_idx])-1):
+                        await cq.answer(f"Selected: {game.selected_card}")
+                    else:
+                        await cq.answer("Can't select face-down cards", show_alert=True)
+                else:
+                    await cq.answer("Pile is empty", show_alert=True)
+        
+        elif card_type == "header":
+            # Auto-move if possible to foundation
+            if game.tableau[pile_idx]:
+                card = game.tableau[pile_idx][-1]
+                suit = card[-2:]
+                if game.is_valid_foundation_move(card, suit):
+                    game.select_card("tableau", pile_idx, len(game.tableau[pile_idx])-1)
+                    success, message = game.move_card("foundation", suit)
+                    await cq.answer(message, show_alert=not success)
+                else:
+                    await cq.answer("Can't move this card to foundation", show_alert=True)
+            else:
+                await cq.answer("Pile is empty", show_alert=True)
+    
+    elif data == "solitaire_cancel":
+        game.selected_card = None
+        game.selected_pile = None
+        await cq.answer("Selection cancelled")
+    
+    elif data == "solitaire_new":
+        # Start new game
+        game = SolitaireGame(user_id)
+        solitaire_games[user_id] = game
+        await cq.answer("New game started!")
+    
+    elif data == "solitaire_quit":
+        del solitaire_games[user_id]
+        await cq.message.edit_text("Game ended. Use /solitaire to start a new one.")
+        await cq.answer()
         return
     
-    # Find the game
-    game_id = None
-    for gid, game in solitaire_games.items():
-        if player_id in game.players:
-            game_id = gid
-            break
-    
-    if not game_id:
-        await cq.answer("Game not found!", show_alert=True)
-        return
-    
-    game = solitaire_games[game_id]
-    success, message = game.play_card(player_id, card)
-    
-    if success:
-        await send_solitaire_update(game_id, f"Player played {card}")
-        if game.game_over:
-            # Add rematch option
-            await asyncio.sleep(2)
-            await send_solitaire_update(game_id)
-    else:
-        await cq.answer(message, show_alert=True)
+    # Update the game display
+    try:
+        await cq.message.edit_text(
+            game.render_game(),
+            reply_markup=game.build_keyboard()
+        )
+    except Exception as e:
+        print(f"Error updating solitaire game: {e}")
     
     await cq.answer()
 
-@bot.on_callback_query(filters.regex(r"solitaire_draw_(\d+)"))
-async def solitaire_draw_callback(client, cq):
-    player_id = int(cq.data.split("_")[2])
-    
-    if cq.from_user.id != player_id:
-        await cq.answer("This is not your game!", show_alert=True)
-        return
-    
-    # Find the game
-    game_id = None
-    for gid, game in solitaire_games.items():
-        if player_id in game.players:
-            game_id = gid
-            break
-    
-    if not game_id:
-        await cq.answer("Game not found!", show_alert=True)
-        return
-    
-    game = solitaire_games[game_id]
-    success, message = game.draw_card(player_id)
-    
-    if success:
-        await send_solitaire_update(game_id, message)
-    else:
-        await cq.answer(message, show_alert=True)
-    
-    await cq.answer()
-
-@bot.on_callback_query(filters.regex(r"solitaire_chat_(\d+)"))
-async def solitaire_chat_callback(client, cq):
-    player_id = int(cq.data.split("_")[2])
-    
-    if cq.from_user.id != player_id:
-        await cq.answer("This is not your game!", show_alert=True)
-        return
-    
-    await cq.answer("Use /say followed by your message to chat with your opponent!", show_alert=True)
-    await cq.answer()
-
-@bot.on_callback_query(filters.regex(r"solitaire_rematch_(\d+)"))
-async def solitaire_rematch_callback(client, cq):
-    player_id = int(cq.data.split("_")[2])
-    game_id = None
-    
-    # Find the game
-    for gid, game in solitaire_games.items():
-        if player_id in game.players:
-            game_id = gid
-            break
-    
-    if not game_id:
-        await cq.answer("Game not found!", show_alert=True)
-        return
-    
-    game = solitaire_games[game_id]
-    if not game.game_over:
-        await cq.answer("Game is still in progress!", show_alert=True)
-        return
-    
-    other_player = [pid for pid in game.players if pid != player_id][0]
-    key = tuple(sorted([player_id, other_player]))
-    
-    solitaire_rematch_requests.setdefault(key, set()).add(player_id)
-    
-    if len(solitaire_rematch_requests[key]) == 2:
-        del solitaire_rematch_requests[key]
-        # Start new game with same players
-        new_game = SolitaireGame(player_id, other_player)
-        solitaire_games[new_game.game_id] = new_game
-        await send_solitaire_update(new_game.game_id, "🔁 Rematch started!")
-    else:
-        await cq.answer("Rematch request sent. Waiting for opponent...", show_alert=True)
-    
-    await cq.answer()
-
-@bot.on_message(filters.command("say") & filters.private)
-async def say_handler(client, msg: Message):
-    parts = msg.text.split(maxsplit=1)
-    if len(parts) != 2:
-        await msg.reply_text("Usage: /say message")
-        return
-    uid = msg.from_user.id
-    
-    # Check if in solitaire game
-    for game_id, game in solitaire_games.items():
-        if uid in game.players:
-            peer = [pid for pid in game.players if pid != uid][0]
-            await bot.send_message(peer, f"💬 Message from your opponent:\n{parts[1]}")
-            await msg.reply_text("Message sent to opponent.")
-            return
-    
-    await msg.reply_text("No active game found.")
-
-# --- Greeting Management Commands (Only for BESTIE_USER_ID) ---
-
+# --- Greeting Management Commands ---
 @bot.on_message(filters.command("setmorning") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
 async def set_morning_handler(client, msg: Message):
     parts = msg.text.split(maxsplit=1)
@@ -714,20 +770,18 @@ async def test_greetings_handler(client, msg: Message):
     await msg.reply_text(f"Night: {greetings['night']}")
 
 # --- Misc Commands ---
-
 @bot.on_message(filters.command("start"))
 async def start_handler(client, msg):
     base_text = (
         "Hey Dumb! 💌\n\nI'm your special bot made with love.\nCommands:\n"
         "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
-        "/id – your ID 🔍\n/solitaire – play card game 🃏\n"
-        "/cancelsolitaire – leave queue ❌\n/say – message opponent 💬"
+        "/id – your ID 🔍\n/solitaire – play classic solitaire 🃏\n"
     )
     
     # Add greeting management commands only for authorized users
     if msg.from_user.id in [BESTIE_USER_ID, MY_USER_ID]:
         base_text += (
-            "\n\n🔧 **Admin Commands:**\n"
+            "\n🔧 **Admin Commands:**\n"
             "/viewgreetings – see current greetings 👀\n"
             "/setmorning – change morning message 🌅\n"
             "/setafternoon – change afternoon message 🌞\n"
@@ -769,7 +823,6 @@ async def id_handler(client, msg):
     await msg.reply_text(f"Your user ID is: {msg.from_user.id}")
 
 # --- Daily Messages ---
-
 async def send_good_morning(): 
     await bot.send_message(BESTIE_USER_ID, greetings["morning"])
 
@@ -784,7 +837,6 @@ scheduler.add_job(send_good_afternoon, 'cron', hour=13, minute=30)
 scheduler.add_job(send_good_night, 'cron', hour=22, minute=0)
 
 # --- FastAPI Webhook ---
-
 @app.post(f"/{BOT_TOKEN}")
 async def telegram_webhook(request: Request):
     update_data = await request.json()
