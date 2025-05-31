@@ -5,11 +5,11 @@ import asyncio
 import pytz
 import httpx
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Update, Message
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 from fastapi import FastAPI, Request
 from starlette.responses import PlainTextResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Set
 
 # --- Environment Setup ---
 API_ID = int(os.getenv("API_ID"))
@@ -48,11 +48,11 @@ song_folder = "songs"
 os.makedirs(photo_folder, exist_ok=True)
 os.makedirs(song_folder, exist_ok=True)
 
-def get_photo_files():
+def get_photo_files() -> List[str]:
     return [os.path.join(photo_folder, f) for f in os.listdir(photo_folder) 
             if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp'))]
 
-def get_song_files():
+def get_song_files() -> List[str]:
     return [os.path.join(song_folder, f) for f in os.listdir(song_folder) 
             if f.lower().endswith(('.mp3', '.wav', '.m4a', '.flac', '.ogg'))]
 
@@ -88,7 +88,9 @@ class SolitaireGame:
         self.stock = self.deck
     
     def create_deck(self) -> List[str]:
-        return [f"{value}{suit}" for suit in SUITS for value in VALUES]
+        deck = [f"{value}{suit}" for suit in SUITS for value in VALUES]
+        random.shuffle(deck)
+        return deck
     
     def get_card_value(self, card: str) -> int:
         value = card[:-2]
@@ -366,11 +368,180 @@ class MultiplayerCardGame:
 solitaire_games: Dict[int, SolitaireGame] = {}
 mp_games: Dict[str, MultiplayerCardGame] = {}  # game_id: game
 mp_waiting_queue: List[int] = []
-mp_rematch_requests: Dict[Tuple[int, int], set] = {}
+mp_rematch_requests: Dict[Tuple[int, int], Set[int]] = {}
 
-# --- Media Handlers (same as before) ---
-# [Previous media upload/download/list/clear handlers remain unchanged]
-# [Previous greeting management commands remain unchanged]
+# --- Media Upload Handlers ---
+@bot.on_message(filters.command("addphoto") & filters.user([MY_USER_ID]))
+async def add_photo_mode_handler(client, msg: Message):
+    upload_mode["photo"] = True
+    upload_mode["song"] = False
+    await msg.reply_text(
+        "📸 Photo Upload Mode ON!\n\n"
+        "Send me photos to add to the collection.\n"
+        "Use /done when finished or /cancel to stop."
+    )
+
+@bot.on_message(filters.command("addsong") & filters.user([MY_USER_ID]))
+async def add_song_mode_handler(client, msg: Message):
+    upload_mode["song"] = True
+    upload_mode["photo"] = False
+    await msg.reply_text(
+        "🎵 Song Upload Mode ON!\n\n"
+        "Send me audio files to add to the collection.\n"
+        "Use /done when finished or /cancel to stop."
+    )
+
+@bot.on_message(filters.command(["done", "cancel"]) & filters.user([MY_USER_ID]))
+async def upload_done_handler(client, msg: Message):
+    was_active = upload_mode["photo"] or upload_mode["song"]
+    upload_mode["photo"] = False
+    upload_mode["song"] = False
+    await msg.reply_text("✅ Upload mode disabled!" if was_active else "ℹ️ No upload mode was active.")
+
+@bot.on_message(filters.photo & filters.user([MY_USER_ID]))
+async def handle_photo_upload(client, msg: Message):
+    if not upload_mode["photo"]:
+        return
+    
+    try:
+        file_id = msg.photo.file_id
+        filename = f"photo_{file_id[:10]}_{random.randint(1000, 9999)}.jpg"
+        file_path = os.path.join(photo_folder, filename)
+        await msg.download(file_name=file_path)
+        await msg.reply_text(f"✅ Photo saved as: {filename}")
+    except Exception as e:
+        await msg.reply_text(f"❌ Error saving photo: {str(e)}")
+
+@bot.on_message(filters.audio & filters.user([MY_USER_ID]))
+async def handle_audio_upload(client, msg: Message):
+    if not upload_mode["song"]:
+        return
+    
+    try:
+        audio = msg.audio
+        filename = audio.file_name or f"{audio.performer or 'Unknown'} - {audio.title or 'Unknown'}_{random.randint(1000, 9999)}.mp3"
+        filename = "".join(c for c in filename if c.isalnum() or c in "._- ").strip()
+        file_path = os.path.join(song_folder, filename)
+        await msg.download(file_name=file_path)
+        
+        duration = f"{audio.duration // 60}:{audio.duration % 60:02d}" if audio.duration else "Unknown"
+        await msg.reply_text(
+            f"✅ Song saved!\n📁 Filename: {filename}\n⏱️ Duration: {duration}"
+        )
+    except Exception as e:
+        await msg.reply_text(f"❌ Error saving song: {str(e)}")
+
+@bot.on_message(filters.document & filters.user([MY_USER_ID]))
+async def handle_document_upload(client, msg: Message):
+    if not upload_mode["song"]:
+        return
+    
+    doc = msg.document
+    if not doc.file_name or not doc.file_name.lower().endswith(('.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac')):
+        await msg.reply_text("⚠️ Please send only audio files when in song upload mode.")
+        return
+    
+    try:
+        filename = doc.file_name
+        file_path = os.path.join(song_folder, filename)
+        
+        if os.path.exists(file_path):
+            base, ext = os.path.splitext(filename)
+            filename = f"{base}_{random.randint(1000, 9999)}{ext}"
+            file_path = os.path.join(song_folder, filename)
+        
+        await msg.download(file_name=file_path)
+        file_size = f"{doc.file_size / (1024*1024):.1f} MB" if doc.file_size else "Unknown size"
+        await msg.reply_text(
+            f"✅ Audio file saved!\n📁 Filename: {filename}\n📊 Size: {file_size}"
+        )
+    except Exception as e:
+        await msg.reply_text(f"❌ Error saving audio file: {str(e)}")
+
+# --- Media Management Commands ---
+@bot.on_message(filters.command("listmedia") & filters.user([MY_USER_ID]))
+async def list_media_handler(client, msg: Message):
+    photos = get_photo_files()
+    songs = get_song_files()
+    
+    response = "📂 Media Collection:\n\n"
+    response += f"📸 Photos: {len(photos)} files\n"
+    if photos:
+        response += "• " + "\n• ".join(os.path.basename(p) for p in photos[:5])
+        if len(photos) > 5:
+            response += f"\n• ... and {len(photos)-5} more"
+    
+    response += "\n\n🎵 Songs: {len(songs)} files\n"
+    if songs:
+        response += "• " + "\n• ".join(os.path.basename(s) for s in songs[:5])
+        if len(songs) > 5:
+            response += f"\n• ... and {len(songs)-5} more"
+    
+    if not photos and not songs:
+        response += "Empty collection. Use /addphoto or /addsong to add media!"
+    
+    await msg.reply_text(response)
+
+@bot.on_message(filters.command("clearmedia") & filters.user([MY_USER_ID]))
+async def clear_media_handler(client, msg: Message):
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🗑️ Clear Photos", callback_data="clear_photos"),
+            InlineKeyboardButton("🎵 Clear Songs", callback_data="clear_songs")
+        ],
+        [InlineKeyboardButton("🗑️ Clear All Media", callback_data="clear_all_media")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_clear")]
+    ])
+    
+    await msg.reply_text(
+        f"🗑️ Clear Media Collection\n\n"
+        f"📸 Photos: {len(get_photo_files())} files\n"
+        f"🎵 Songs: {len(get_song_files())} files\n\n"
+        f"⚠️ Warning: This action cannot be undone!",
+        reply_markup=keyboard
+    )
+
+@bot.on_callback_query(filters.regex("clear_photos") & filters.user([MY_USER_ID]))
+async def clear_photos_callback(client, cq):
+    try:
+        photos = get_photo_files()
+        for photo in photos:
+            os.remove(photo)
+        await cq.message.edit_text(f"✅ Cleared {len(photos)} photos!")
+    except Exception as e:
+        await cq.message.edit_text(f"❌ Error clearing photos: {str(e)}")
+    await cq.answer()
+
+@bot.on_callback_query(filters.regex("clear_songs") & filters.user([MY_USER_ID]))
+async def clear_songs_callback(client, cq):
+    try:
+        songs = get_song_files()
+        for song in songs:
+            os.remove(song)
+        await cq.message.edit_text(f"✅ Cleared {len(songs)} songs!")
+    except Exception as e:
+        await cq.message.edit_text(f"❌ Error clearing songs: {str(e)}")
+    await cq.answer()
+
+@bot.on_callback_query(filters.regex("clear_all_media") & filters.user([MY_USER_ID]))
+async def clear_all_media_callback(client, cq):
+    try:
+        photos = get_photo_files()
+        songs = get_song_files()
+        for photo in photos:
+            os.remove(photo)
+        for song in songs:
+            os.remove(song)
+        total = len(photos) + len(songs)
+        await cq.message.edit_text(f"✅ Cleared all media! ({total} files removed)")
+    except Exception as e:
+        await cq.message.edit_text(f"❌ Error clearing media: {str(e)}")
+    await cq.answer()
+
+@bot.on_callback_query(filters.regex("cancel_clear"))
+async def cancel_clear_callback(client, cq):
+    await cq.message.edit_text("❌ Clear operation cancelled.")
+    await cq.answer()
 
 # --- Solitaire Handlers ---
 @bot.on_message(filters.command("solitaire"))
@@ -655,10 +826,112 @@ async def say_handler(client, msg: Message):
     
     await msg.reply_text("You're not in any active game")
 
-# --- Other Handlers (Start, Quotes, Media, etc.) ---
-# [All previous handlers for start, quotes, photos, music, id remain unchanged]
-# [All previous greeting management commands remain unchanged]
-# [All previous media upload/download/list/clear handlers remain unchanged]
+# --- Greeting Management Commands ---
+@bot.on_message(filters.command("setmorning") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+async def set_morning_handler(client, msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) != 2:
+        await msg.reply_text("Usage: /setmorning Your new morning message")
+        return
+    greetings["morning"] = parts[1]
+    await msg.reply_text(f"✅ Morning greeting updated to:\n{parts[1]}")
+
+@bot.on_message(filters.command("setafternoon") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+async def set_afternoon_handler(client, msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) != 2:
+        await msg.reply_text("Usage: /setafternoon Your new afternoon message")
+        return
+    greetings["afternoon"] = parts[1]
+    await msg.reply_text(f"✅ Afternoon greeting updated to:\n{parts[1]}")
+
+@bot.on_message(filters.command("setnight") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+async def set_night_handler(client, msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) != 2:
+        await msg.reply_text("Usage: /setnight Your new night message")
+        return
+    greetings["night"] = parts[1]
+    await msg.reply_text(f"✅ Night greeting updated to:\n{parts[1]}")
+
+@bot.on_message(filters.command("viewgreetings") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+async def view_greetings_handler(client, msg: Message):
+    greeting_text = "🌟 Current Greetings:\n\n"
+    greeting_text += f"🌅 Morning: {greetings['morning']}\n\n"
+    greeting_text += f"🌞 Afternoon: {greetings['afternoon']}\n\n"
+    greeting_text += f"🌙 Night: {greetings['night']}\n\n"
+    greeting_text += "Use /setmorning, /setafternoon, or /setnight to change them."
+    await msg.reply_text(greeting_text)
+
+@bot.on_message(filters.command("resetgreetings") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+async def reset_greetings_handler(client, msg: Message):
+    greetings["morning"] = "🌞 Good morning bestie have a nice day! 💖"
+    greetings["afternoon"] = "🌞 Good Afternoon Kritika Eat well! 💖🎶"
+    greetings["night"] = "🌙 Good night Dumb Jigs I Like u the most 💫"
+    await msg.reply_text("✅ All greetings have been reset to default!")
+
+@bot.on_message(filters.command("testgreetings") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+async def test_greetings_handler(client, msg: Message):
+    await msg.reply_text("🧪 Testing all greetings:")
+    await asyncio.sleep(1)
+    await msg.reply_text(f"Morning: {greetings['morning']}")
+    await asyncio.sleep(1)
+    await msg.reply_text(f"Afternoon: {greetings['afternoon']}")
+    await asyncio.sleep(1)
+    await msg.reply_text(f"Night: {greetings['night']}")
+
+# --- Misc Commands ---
+@bot.on_message(filters.command("start"))
+async def start_handler(client, msg: Message):
+    base_text = (
+        "Hey Dumb! 💌\n\nI'm your special bot made with love.\nCommands:\n"
+        "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
+        "/id – your ID 🔍\n/solitaire – play classic solitaire 🃏\n/playcards – multiplayer card game 🎴\n"
+        "/cancelqueue – leave matchmaking queue ❌\n/say – send message to opponent 💬"
+    )
+    
+    if msg.from_user.id in [BESTIE_USER_ID, MY_USER_ID]:
+        base_text += (
+            "\n\n🔧 Admin Commands:\n"
+            "/viewgreetings – see current greetings 👀\n"
+            "/setmorning – change morning message 🌅\n"
+            "/setafternoon – change afternoon message 🌞\n"
+            "/setnight – change night message 🌙\n"
+            "/resetgreetings – reset to defaults 🔄\n"
+            "/testgreetings – test all greetings 🧪\n\n"
+            "📂 Media Management:\n"
+            "/addphoto – enable photo upload mode 📸\n"
+            "/addsong – enable song upload mode 🎵\n"
+            "/listmedia – view media collection 📋\n"
+            "/clearmedia – clear media files 🗑️\n"
+            "/done or /cancel – exit upload mode ✅"
+        )
+    
+    await msg.reply_text(base_text)
+
+@bot.on_message(filters.command("quote"))
+async def quote_handler(client, msg: Message): 
+    await msg.reply_text(random.choice(quotes))
+
+@bot.on_message(filters.command(["photo", "vibe"]))
+async def photo_handler(client, msg: Message):
+    photo_files = get_photo_files()
+    if photo_files: 
+        await msg.reply_photo(random.choice(photo_files))
+    else: 
+        await msg.reply_text("No photos available! Ask admin to add some. 📸")
+
+@bot.on_message(filters.command("music"))
+async def music_handler(client, msg: Message):
+    song_files = get_song_files()
+    if song_files: 
+        await msg.reply_audio(audio=random.choice(song_files), caption="Vibe 🎧")
+    else: 
+        await msg.reply_text("No songs available! Ask admin to add some. 🎵")
+
+@bot.on_message(filters.command("id"))
+async def id_handler(client, msg: Message): 
+    await msg.reply_text(f"Your user ID is: {msg.from_user.id}")
 
 # --- Daily Messages ---
 async def send_good_morning(): 
