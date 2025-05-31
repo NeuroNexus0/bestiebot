@@ -196,7 +196,6 @@ def get_new_morning_question() -> str:
     return "\n".join(questions) if morning_question_count > 1 else questions[0]
 
 def get_new_evening_question() -> str:
-  def get_new_evening_question() -> str:
     """Get random questions from the evening pool"""
     if not questions_evening:
         return "What was the highlight of your day?"
