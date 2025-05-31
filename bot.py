@@ -16,14 +16,15 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     Message,
-    CallbackQuery
+    CallbackQuery,
+    Update
 )
 from fastapi import FastAPI, Request
 from starlette.responses import PlainTextResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # --- Environment Setup ---
-API_ID = int(os.getenv("API_ID", 12345))  # Replace with your API_ID
+API_ID = int(os.getenv("API_ID", 12345))
 API_HASH = os.getenv("API_HASH", "your_api_hash_here")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "your_bot_token_here")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://your-webhook-url.com")
@@ -34,8 +35,8 @@ app = FastAPI()
 scheduler = AsyncIOScheduler(timezone=pytz.timezone("Asia/Kolkata"))
 
 # --- User Configuration ---
-BESTIE_USER_ID = 5672706639  # Your bestie's user ID
-MY_USER_ID = 7590978422      # Your user ID
+BESTIE_USER_ID = 5672706639
+MY_USER_ID = 7590978422
 
 # --- Content Pools ---
 quotes = [
@@ -53,16 +54,16 @@ greetings = {
 }
 
 # --- File Paths ---
-CODE_FILE = "bot.py"                # Main bot file
-BACKUP_FILE = "bot_backup.py"       # Backup file
-PHOTO_FOLDER = "photos"             # Folder for photos
-SONG_FOLDER = "songs"               # Folder for songs
+CODE_FILE = "bot.py"
+BACKUP_FILE = "bot_backup.py"
+PHOTO_FOLDER = "photos"
+SONG_FOLDER = "songs"
 
 # --- Game State Storage ---
-games: Dict[int, List[str]] = {}                    # Single-player games
-waiting_queue: List[int] = []                       # Multiplayer queue
-online_games: Dict[Tuple[int, int], Dict] = {}      # Active multiplayer games
-rematch_requests: Dict[Tuple[int, int], set] = {}   # Rematch requests
+games: Dict[int, List[str]] = {}
+waiting_queue: List[int] = []
+online_games: Dict[Tuple[int, int], Dict] = {}
+rematch_requests: Dict[Tuple[int, int], set] = {}
 
 # --- Initialize Folders ---
 os.makedirs(PHOTO_FOLDER, exist_ok=True)
@@ -127,33 +128,25 @@ def build_board_keyboard(board: List[str], prefix: str = "ttt") -> InlineKeyboar
 
 # --- Code Management System ---
 async def get_current_code() -> str:
-    """Read and return the current bot code"""
     with open(CODE_FILE, "r") as f:
         return f.read()
 
 async def save_new_code(code: str) -> bool:
-    """Save new code with backup"""
-    # Create backup
     if os.path.exists(CODE_FILE):
         os.rename(CODE_FILE, BACKUP_FILE)
     
-    # Save new code
     with open(CODE_FILE, "w") as f:
         f.write(code)
     
     return True
 
 async def restart_bot():
-    """Restart the bot process"""
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
-# --- Code Management Handlers ---
 @bot.on_message(filters.command("getcode") & filters.user(MY_USER_ID))
 async def send_code_handler(client: Client, msg: Message):
-    """Send the current bot code to admin"""
     try:
         code = await get_current_code()
-        # Send as a document to preserve formatting
         with StringIO(code) as file:
             file.name = CODE_FILE
             await msg.reply_document(
@@ -168,24 +161,19 @@ async def send_code_handler(client: Client, msg: Message):
 
 @bot.on_message(filters.command("updatecode") & filters.user(MY_USER_ID))
 async def update_code_handler(client: Client, msg: Message):
-    """Update the bot code from a replied document"""
     if not msg.reply_to_message or not msg.reply_to_message.document:
         await msg.reply_text("❌ Please reply to a document containing the new code")
         return
     
     try:
-        # Download the file
         file_path = await msg.reply_to_message.download()
         
-        # Read the new code
         with open(file_path, "r") as f:
             new_code = f.read()
         
-        # Save the new code
         success = await save_new_code(new_code)
         
         if success:
-            # Ask for confirmation before restart
             await msg.reply_text(
                 "✅ Code updated successfully!\n"
                 "Do you want to restart the bot to apply changes?",
@@ -197,7 +185,6 @@ async def update_code_handler(client: Client, msg: Message):
         else:
             await msg.reply_text("❌ Failed to save new code")
         
-        # Clean up downloaded file
         os.remove(file_path)
         
     except Exception as e:
@@ -205,7 +192,6 @@ async def update_code_handler(client: Client, msg: Message):
 
 @bot.on_callback_query(filters.regex("edit_code") & filters.user(MY_USER_ID))
 async def edit_code_callback(client: Client, cq: CallbackQuery):
-    """Handle edit code button"""
     try:
         code = await get_current_code()
         await cq.message.reply_text(
@@ -221,21 +207,18 @@ async def edit_code_callback(client: Client, cq: CallbackQuery):
 
 @bot.on_callback_query(filters.regex("confirm_restart") & filters.user(MY_USER_ID))
 async def confirm_restart_callback(client: Client, cq: CallbackQuery):
-    """Handle restart confirmation"""
     await cq.message.edit_text("🔄 Restarting bot...")
     await cq.answer()
     await restart_bot()
 
 @bot.on_callback_query(filters.regex("cancel_restart") & filters.user(MY_USER_ID))
 async def cancel_restart_callback(client: Client, cq: CallbackQuery):
-    """Handle restart cancellation"""
     await cq.message.edit_text("🚫 Restart cancelled. Changes will take effect after next restart.")
     await cq.answer()
 
 # --- Game Handlers ---
 @bot.on_message(filters.command("ttt"))
 async def ttt_handler(client: Client, msg: Message):
-    """Start a new Tic-Tac-Toe game"""
     uid = msg.from_user.id
     board = [" "] * 9
     games[uid] = board
@@ -246,7 +229,6 @@ async def ttt_handler(client: Client, msg: Message):
 
 @bot.on_callback_query(filters.regex(r"ttt_(\d)"))
 async def ttt_callback(client: Client, cq: CallbackQuery):
-    """Handle Tic-Tac-Toe moves"""
     uid = cq.from_user.id
     idx = int(cq.data.split("_")[1])
     
@@ -254,7 +236,6 @@ async def ttt_callback(client: Client, cq: CallbackQuery):
         await cq.answer("Invalid move", show_alert=True)
         return
     
-    # Player move
     games[uid][idx] = "X"
     
     if check_winner(games[uid], "X"):
@@ -273,7 +254,6 @@ async def ttt_callback(client: Client, cq: CallbackQuery):
         await cq.answer()
         return
     
-    # Bot move
     bot_idx = bot_move(games[uid])
     if bot_idx is not None:
         games[uid][bot_idx] = "O"
@@ -302,7 +282,6 @@ async def ttt_callback(client: Client, cq: CallbackQuery):
 # --- Multiplayer Game Handlers ---
 @bot.on_message(filters.command("onlinettt"))
 async def online_ttt_handler(client: Client, msg: Message):
-    """Start multiplayer Tic-Tac-Toe"""
     user_id = msg.from_user.id
     
     if user_id in waiting_queue:
@@ -343,7 +322,6 @@ async def online_ttt_handler(client: Client, msg: Message):
 
 @bot.on_message(filters.command("cancelqueue"))
 async def cancel_queue_handler(client: Client, msg: Message):
-    """Cancel queue for multiplayer"""
     user_id = msg.from_user.id
     if user_id in waiting_queue:
         waiting_queue.remove(user_id)
@@ -353,7 +331,6 @@ async def cancel_queue_handler(client: Client, msg: Message):
 
 @bot.on_callback_query(filters.regex("cancel_queue"))
 async def cancel_queue_callback(client: Client, cq: CallbackQuery):
-    """Handle queue cancellation via button"""
     user_id = cq.from_user.id
     if user_id in waiting_queue:
         waiting_queue.remove(user_id)
@@ -364,7 +341,6 @@ async def cancel_queue_callback(client: Client, cq: CallbackQuery):
 
 @bot.on_callback_query(filters.regex(r"multi_(\d+)_(\d+)_(\d+)"))
 async def multiplayer_move_handler(client: Client, cq: CallbackQuery):
-    """Handle multiplayer moves"""
     x_id, o_id, move = map(int, cq.data.split("_")[1:])
     uid = cq.from_user.id
     game_key = (x_id, o_id)
@@ -415,7 +391,6 @@ async def multiplayer_move_handler(client: Client, cq: CallbackQuery):
 
 @bot.on_callback_query(filters.regex(r"rematch_(\d+)_(\d+)"))
 async def rematch_request_handler(client: Client, cq: CallbackQuery):
-    """Handle rematch requests"""
     x_id, o_id = map(int, cq.data.split("_")[1:])
     sender = cq.from_user.id
     key = tuple(sorted([x_id, o_id]))
@@ -449,7 +424,6 @@ async def rematch_request_handler(client: Client, cq: CallbackQuery):
 # --- In-Game Chat ---
 @bot.on_message(filters.command("say") & filters.private)
 async def say_handler(client: Client, msg: Message):
-    """Send message to opponent"""
     parts = msg.text.split(maxsplit=1)
     if len(parts) != 2:
         await msg.reply_text("Usage: /say message")
@@ -468,7 +442,6 @@ async def say_handler(client: Client, msg: Message):
 # --- Greeting Management ---
 @bot.on_message(filters.command("setmorning") & filters.user(MY_USER_ID))
 async def set_morning_handler(client: Client, msg: Message):
-    """Set morning greeting"""
     parts = msg.text.split(maxsplit=1)
     if len(parts) != 2:
         await msg.reply_text("Usage: /setmorning Your new morning message")
@@ -479,7 +452,6 @@ async def set_morning_handler(client: Client, msg: Message):
 
 @bot.on_message(filters.command("setafternoon") & filters.user(MY_USER_ID))
 async def set_afternoon_handler(client: Client, msg: Message):
-    """Set afternoon greeting"""
     parts = msg.text.split(maxsplit=1)
     if len(parts) != 2:
         await msg.reply_text("Usage: /setafternoon Your new afternoon message")
@@ -490,7 +462,6 @@ async def set_afternoon_handler(client: Client, msg: Message):
 
 @bot.on_message(filters.command("setnight") & filters.user(MY_USER_ID))
 async def set_night_handler(client: Client, msg: Message):
-    """Set night greeting"""
     parts = msg.text.split(maxsplit=1)
     if len(parts) != 2:
         await msg.reply_text("Usage: /setnight Your new night message")
@@ -501,7 +472,6 @@ async def set_night_handler(client: Client, msg: Message):
 
 @bot.on_message(filters.command("viewgreetings") & filters.user(MY_USER_ID))
 async def view_greetings_handler(client: Client, msg: Message):
-    """View current greetings"""
     greeting_text = "🌟 Current Greetings:\n\n"
     greeting_text += f"🌅 Morning: {greetings['morning']}\n\n"
     greeting_text += f"🌞 Afternoon: {greetings['afternoon']}\n\n"
@@ -511,7 +481,6 @@ async def view_greetings_handler(client: Client, msg: Message):
 
 @bot.on_message(filters.command("resetgreetings") & filters.user(MY_USER_ID))
 async def reset_greetings_handler(client: Client, msg: Message):
-    """Reset greetings to default"""
     greetings.update({
         "morning": "🌞 Good morning bestie have a nice day! 💖",
         "afternoon": "🌞 Good Afternoon Kritika Eat well! 💖🎶",
@@ -521,7 +490,6 @@ async def reset_greetings_handler(client: Client, msg: Message):
 
 @bot.on_message(filters.command("testgreetings") & filters.user(MY_USER_ID))
 async def test_greetings_handler(client: Client, msg: Message):
-    """Test all greetings"""
     await msg.reply_text("🧪 Testing all greetings:")
     await asyncio.sleep(1)
     await msg.reply_text(f"Morning: {greetings['morning']}")
@@ -533,7 +501,6 @@ async def test_greetings_handler(client: Client, msg: Message):
 # --- Media Handlers ---
 @bot.on_message(filters.command(["photo", "vibe"]))
 async def photo_handler(client: Client, msg: Message):
-    """Send random photo"""
     try:
         photo_files = [
             os.path.join(PHOTO_FOLDER, f) 
@@ -549,7 +516,6 @@ async def photo_handler(client: Client, msg: Message):
 
 @bot.on_message(filters.command("music"))
 async def music_handler(client: Client, msg: Message):
-    """Send random song"""
     try:
         song_files = [
             os.path.join(SONG_FOLDER, f)
@@ -568,18 +534,14 @@ async def music_handler(client: Client, msg: Message):
 
 # --- Daily Messages ---
 async def send_good_morning():
-    """Send morning greeting"""
     await bot.send_message(BESTIE_USER_ID, greetings["morning"])
 
 async def send_good_afternoon():
-    """Send afternoon greeting"""
     await bot.send_message(BESTIE_USER_ID, greetings["afternoon"])
 
 async def send_good_night():
-    """Send night greeting"""
     await bot.send_message(BESTIE_USER_ID, greetings["night"])
 
-# Schedule daily messages
 scheduler.add_job(send_good_morning, 'cron', hour=6, minute=0)
 scheduler.add_job(send_good_afternoon, 'cron', hour=13, minute=30)
 scheduler.add_job(send_good_night, 'cron', hour=22, minute=0)
@@ -587,7 +549,6 @@ scheduler.add_job(send_good_night, 'cron', hour=22, minute=0)
 # --- Basic Commands ---
 @bot.on_message(filters.command("start"))
 async def start_handler(client: Client, msg: Message):
-    """Start command with all available commands"""
     base_text = (
         "Hey Dumb! 💌\n\nI'm your special bot made with love.\nCommands:\n"
         "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
@@ -595,7 +556,6 @@ async def start_handler(client: Client, msg: Message):
         "/cancelqueue – leave matchmaking queue ❌\n/say – send message to opponent 💬"
     )
     
-    # Add admin commands only for MY_USER_ID
     if msg.from_user.id == MY_USER_ID:
         base_text += (
             "\n\n🔧 Admin Commands:\n"
@@ -613,23 +573,19 @@ async def start_handler(client: Client, msg: Message):
 
 @bot.on_message(filters.command("quote"))
 async def quote_handler(client: Client, msg: Message):
-    """Send random quote"""
     await msg.reply_text(random.choice(quotes))
 
 @bot.on_message(filters.command("id"))
 async def id_handler(client: Client, msg: Message):
-    """Send user ID"""
     await msg.reply_text(f"Your user ID is: {msg.from_user.id}")
 
 @bot.on_callback_query(filters.regex("noop"))
 async def noop_handler(client: Client, cq: CallbackQuery):
-    """Handle no-op button presses"""
     await cq.answer()
 
 # --- FastAPI Webhook ---
 @app.post(f"/{BOT_TOKEN}")
 async def telegram_webhook(request: Request):
-    """Handle Telegram webhook updates"""
     update_data = await request.json()
     update = Update.de_json(update_data, bot)
     await bot.process_update(update)
@@ -637,13 +593,11 @@ async def telegram_webhook(request: Request):
 
 @app.get("/")
 async def root():
-    """Root endpoint for health checks"""
     return {"message": "Bestie Bot is running!"}
 
 # --- Startup/Shutdown Events ---
 @app.on_event("startup")
 async def startup_event():
-    """Initialize bot on startup"""
     await bot.start()
     scheduler.start()
     async with httpx.AsyncClient() as client:
@@ -654,7 +608,6 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Cleanup on shutdown"""
     await bot.stop()
     scheduler.shutdown()
 
