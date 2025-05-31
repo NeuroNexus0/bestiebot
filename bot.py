@@ -5,7 +5,7 @@ import asyncio
 import pytz
 import httpx
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, Update
 from fastapi import FastAPI, Request
 from starlette.responses import PlainTextResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -62,6 +62,129 @@ upload_mode = {"photo": False, "song": False}
 # --- Game Constants ---
 SUITS = ["♠️", "♥️", "♦️", "♣️"]
 VALUES = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+# --- Solitaire Game Implementation ---
+class SolitaireGame:
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+        self.stock = []
+        self.waste = []
+        self.foundations = {suit: [] for suit in SUITS}
+        self.tableau = [[] for _ in range(7)]
+        self.selected_card = None
+        self.message_obj = None
+        
+        # Initialize and deal cards
+        self._initialize_game()
+    
+    def _initialize_game(self):
+        # Create and shuffle deck
+        deck = [(value, suit) for suit in SUITS for value in VALUES]
+        random.shuffle(deck)
+        
+        # Deal to tableau
+        for i in range(7):
+            self.tableau[i] = deck[:i+1]
+            deck = deck[i+1:]
+        
+        # Remaining cards go to stock
+        self.stock = deck
+    
+    def draw_from_stock(self):
+        if not self.stock:
+            self.stock = self.waste[::-1]
+            self.waste = []
+        else:
+            self.waste.append(self.stock.pop())
+    
+    def select_card(self, pile_type: str, pile_idx: int, card_idx: int):
+        if pile_type == "waste":
+            if self.waste:
+                self.selected_card = ("waste", -1, len(self.waste)-1)
+        elif pile_type == "foundation":
+            if self.foundations[SUITS[pile_idx]]:
+                self.selected_card = ("foundation", pile_idx, len(self.foundations[SUITS[pile_idx]])-1)
+        elif pile_type == "tableau":
+            if self.tableau[pile_idx] and card_idx < len(self.tableau[pile_idx]):
+                self.selected_card = ("tableau", pile_idx, card_idx)
+    
+    def move_card(self, dest_type: str, dest_idx: int) -> Tuple[bool, str]:
+        if not self.selected_card:
+            return False, "No card selected"
+        
+        src_type, src_idx, card_idx = self.selected_card
+        
+        # Simplified movement logic - implement proper rules as needed
+        if dest_type == "foundation":
+            suit = SUITS[dest_idx]
+            if not self.foundations[suit]:
+                if src_type == "waste":
+                    card = self.waste[-1]
+                    self.foundations[suit].append(card)
+                    self.waste.pop()
+                    self.selected_card = None
+                    return True, "Card moved to foundation"
+            return False, "Invalid move to foundation"
+        
+        return False, "Move not implemented"
+    
+    def render_game(self) -> str:
+        game_str = "🃏 Solitaire 🃏\n\n"
+        
+        # Stock and waste
+        game_str += f"Stock: {'🂠' if self.stock else '🃏'} | Waste: {'🂠' if not self.waste else self.waste[-1][0] + self.waste[-1][1]}\n\n"
+        
+        # Foundations
+        game_str += "Foundations:\n"
+        for suit in SUITS:
+            top_card = self.foundations[suit][-1] if self.foundations[suit] else "🂠"
+            game_str += f"{suit}: {top_card if isinstance(top_card, str) else top_card[0] + top_card[1]}  "
+        game_str += "\n\n"
+        
+        # Tableau
+        game_str += "Tableau:\n"
+        max_len = max(len(pile) for pile in self.tableau)
+        for i in range(max_len):
+            for pile in self.tableau:
+                if i < len(pile):
+                    card = pile[i]
+                    game_str += f"{card[0]}{card[1]} " if i == len(pile)-1 else "🂠 "
+                else:
+                    game_str += "   "
+            game_str += "\n"
+        
+        return game_str
+    
+    def build_keyboard(self) -> InlineKeyboardMarkup:
+        keyboard = []
+        
+        # Stock/Waste row
+        keyboard.append([
+            InlineKeyboardButton("Draw", callback_data="solitaire_draw"),
+            InlineKeyboardButton("Waste", callback_data="solitaire_waste")
+        ])
+        
+        # Foundations row
+        foundations_row = []
+        for i, suit in enumerate(SUITS):
+            foundations_row.append(
+                InlineKeyboardButton(suit, callback_data=f"solitaire_foundation_{suit}")
+            )
+        keyboard.append(foundations_row)
+        
+        # Tableau rows
+        for i in range(7):
+            keyboard.append([
+                InlineKeyboardButton(f"Pile {i+1}", callback_data=f"solitaire_pile_{i}_top")
+            ])
+        
+        # Control buttons
+        keyboard.append([
+            InlineKeyboardButton("🔄 New Game", callback_data="solitaire_new"),
+            InlineKeyboardButton("❌ Quit", callback_data="solitaire_quit")
+        ])
+        
+        return InlineKeyboardMarkup(keyboard)
 
 # --- Tic-Tac-Toe Game Implementation ---
 class TicTacToeGame:
@@ -156,6 +279,9 @@ solitaire_games: Dict[int, SolitaireGame] = {}
 ttt_games: Dict[int, TicTacToeGame] = {}  # Single player games
 online_ttt_games: Dict[str, TicTacToeGame] = {}  # Multiplayer games
 ttt_waiting_queue: List[int] = []
+
+# [Rest of your existing code continues here...]
+# Include all your existing handlers and FastAPI setup
 
 # --- Media Upload Handlers (Admin Only) ---
 @bot.on_message(filters.command("addphoto") & filters.user(MY_USER_ID))
