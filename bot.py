@@ -272,106 +272,11 @@ class SolitaireGame:
         
         return InlineKeyboardMarkup(keyboard)
 
-# --- Multiplayer Card Game ---
-class MultiplayerCardGame:
-    def __init__(self, player1_id: int, player2_id: int):
-        self.players = {
-            player1_id: {"hand": [], "score": 0},
-            player2_id: {"hand": [], "score": 0}
-        }
-        self.deck = self.create_deck()
-        self.discard_pile = []
-        self.current_turn = player1_id
-        self.game_over = False
-        self.winner = None
-        self.messages = {}  # player_id: message_object
-    
-    def create_deck(self) -> List[str]:
-        return [f"{value}{suit}" for suit in SUITS for value in VALUES] * 2  # Double deck
-    
-    def get_card_value(self, card: str) -> int:
-        value = card[:-2]
-        return {"A": 1, "J": 11, "Q": 12, "K": 13}.get(value, int(value))
-    
-    def can_play_card(self, card: str) -> bool:
-        if not self.discard_pile:
-            return True
-        top_card = self.discard_pile[-1]
-        return card[-2:] == top_card[-2:] or card[:-2] == top_card[:-2]
-    
-    def deal_initial_hands(self):
-        for player in self.players.values():
-            player["hand"] = [self.deck.pop() for _ in range(7)]
-        self.discard_pile.append(self.deck.pop())
-    
-    def play_card(self, player_id: int, card: str) -> Tuple[bool, str]:
-        if player_id != self.current_turn:
-            return False, "Not your turn!"
-        if card not in self.players[player_id]["hand"]:
-            return False, "You don't have this card!"
-        if not self.can_play_card(card):
-            return False, "Card doesn't match suit or value!"
-        
-        self.players[player_id]["hand"].remove(card)
-        self.discard_pile.append(card)
-        
-        if not self.players[player_id]["hand"]:
-            self.game_over = True
-            self.winner = player_id
-            return True, "You won! 🎉"
-        
-        self.current_turn = next(p for p in self.players if p != player_id)
-        return True, "Card played successfully!"
-    
-    def draw_card(self, player_id: int) -> Tuple[bool, str]:
-        if player_id != self.current_turn:
-            return False, "Not your turn!"
-        if not self.deck:
-            return False, "No cards left to draw!"
-        
-        card = self.deck.pop()
-        self.players[player_id]["hand"].append(card)
-        self.current_turn = next(p for p in self.players if p != player_id)
-        return True, f"You drew: {card}"
-    
-    def get_hand_display(self, player_id: int) -> str:
-        hand = self.players[player_id]["hand"]
-        return " ".join(hand[:10]) + (f" (+{len(hand)-10} more)" if len(hand) > 10 else "")
-    
-    def build_game_keyboard(self, player_id: int) -> InlineKeyboardMarkup:
-        hand = self.players[player_id]["hand"]
-        playable = [card for card in hand if self.can_play_card(card)]
-        unplayable = [card for card in hand if not self.can_play_card(card)]
-        
-        keyboard = []
-        for i in range(0, len(hand), 3):
-            row = []
-            for j in range(3):
-                if i + j < len(playable):
-                    card = playable[i + j]
-                    row.append(InlineKeyboardButton(f"✅{card}", callback_data=f"mp_play_{player_id}_{card}"))
-                elif i + j - len(playable) < len(unplayable):
-                    card = unplayable[i + j - len(playable)]
-                    row.append(InlineKeyboardButton(f"❌{card}", callback_data=f"mp_play_{player_id}_{card}"))
-            if row:
-                keyboard.append(row)
-        
-        keyboard.append([InlineKeyboardButton("🃏 Draw Card", callback_data=f"mp_draw_{player_id}")])
-        keyboard.append([InlineKeyboardButton("💬 Chat", callback_data=f"mp_chat_{player_id}")])
-        
-        if self.game_over:
-            keyboard.append([InlineKeyboardButton("🔁 Rematch", callback_data=f"mp_rematch_{player_id}")])
-        
-        return InlineKeyboardMarkup(keyboard)
-
 # --- Game State Management ---
 solitaire_games: Dict[int, SolitaireGame] = {}
-mp_games: Dict[str, MultiplayerCardGame] = {}  # game_id: game
-mp_waiting_queue: List[int] = []
-mp_rematch_requests: Dict[Tuple[int, int], Set[int]] = {}
 
-# --- Media Upload Handlers ---
-@bot.on_message(filters.command("addphoto") & filters.user([MY_USER_ID]))
+# --- Media Upload Handlers (Admin Only) ---
+@bot.on_message(filters.command("addphoto") & filters.user(MY_USER_ID))
 async def add_photo_mode_handler(client, msg: Message):
     upload_mode["photo"] = True
     upload_mode["song"] = False
@@ -381,7 +286,7 @@ async def add_photo_mode_handler(client, msg: Message):
         "Use /done when finished or /cancel to stop."
     )
 
-@bot.on_message(filters.command("addsong") & filters.user([MY_USER_ID]))
+@bot.on_message(filters.command("addsong") & filters.user(MY_USER_ID))
 async def add_song_mode_handler(client, msg: Message):
     upload_mode["song"] = True
     upload_mode["photo"] = False
@@ -391,14 +296,14 @@ async def add_song_mode_handler(client, msg: Message):
         "Use /done when finished or /cancel to stop."
     )
 
-@bot.on_message(filters.command(["done", "cancel"]) & filters.user([MY_USER_ID]))
+@bot.on_message(filters.command(["done", "cancel"]) & filters.user(MY_USER_ID))
 async def upload_done_handler(client, msg: Message):
     was_active = upload_mode["photo"] or upload_mode["song"]
     upload_mode["photo"] = False
     upload_mode["song"] = False
     await msg.reply_text("✅ Upload mode disabled!" if was_active else "ℹ️ No upload mode was active.")
 
-@bot.on_message(filters.photo & filters.user([MY_USER_ID]))
+@bot.on_message(filters.photo & filters.user(MY_USER_ID))
 async def handle_photo_upload(client, msg: Message):
     if not upload_mode["photo"]:
         return
@@ -412,7 +317,7 @@ async def handle_photo_upload(client, msg: Message):
     except Exception as e:
         await msg.reply_text(f"❌ Error saving photo: {str(e)}")
 
-@bot.on_message(filters.audio & filters.user([MY_USER_ID]))
+@bot.on_message(filters.audio & filters.user(MY_USER_ID))
 async def handle_audio_upload(client, msg: Message):
     if not upload_mode["song"]:
         return
@@ -431,7 +336,7 @@ async def handle_audio_upload(client, msg: Message):
     except Exception as e:
         await msg.reply_text(f"❌ Error saving song: {str(e)}")
 
-@bot.on_message(filters.document & filters.user([MY_USER_ID]))
+@bot.on_message(filters.document & filters.user(MY_USER_ID))
 async def handle_document_upload(client, msg: Message):
     if not upload_mode["song"]:
         return
@@ -458,8 +363,8 @@ async def handle_document_upload(client, msg: Message):
     except Exception as e:
         await msg.reply_text(f"❌ Error saving audio file: {str(e)}")
 
-# --- Media Management Commands ---
-@bot.on_message(filters.command("listmedia") & filters.user([MY_USER_ID]))
+# --- Media Management Commands (Admin Only) ---
+@bot.on_message(filters.command("listmedia") & filters.user(MY_USER_ID))
 async def list_media_handler(client, msg: Message):
     photos = get_photo_files()
     songs = get_song_files()
@@ -482,7 +387,7 @@ async def list_media_handler(client, msg: Message):
     
     await msg.reply_text(response)
 
-@bot.on_message(filters.command("clearmedia") & filters.user([MY_USER_ID]))
+@bot.on_message(filters.command("clearmedia") & filters.user(MY_USER_ID))
 async def clear_media_handler(client, msg: Message):
     keyboard = InlineKeyboardMarkup([
         [
@@ -501,7 +406,7 @@ async def clear_media_handler(client, msg: Message):
         reply_markup=keyboard
     )
 
-@bot.on_callback_query(filters.regex("clear_photos") & filters.user([MY_USER_ID]))
+@bot.on_callback_query(filters.regex("clear_photos") & filters.user(MY_USER_ID))
 async def clear_photos_callback(client, cq):
     try:
         photos = get_photo_files()
@@ -512,7 +417,7 @@ async def clear_photos_callback(client, cq):
         await cq.message.edit_text(f"❌ Error clearing photos: {str(e)}")
     await cq.answer()
 
-@bot.on_callback_query(filters.regex("clear_songs") & filters.user([MY_USER_ID]))
+@bot.on_callback_query(filters.regex("clear_songs") & filters.user(MY_USER_ID))
 async def clear_songs_callback(client, cq):
     try:
         songs = get_song_files()
@@ -523,7 +428,7 @@ async def clear_songs_callback(client, cq):
         await cq.message.edit_text(f"❌ Error clearing songs: {str(e)}")
     await cq.answer()
 
-@bot.on_callback_query(filters.regex("clear_all_media") & filters.user([MY_USER_ID]))
+@bot.on_callback_query(filters.regex("clear_all_media") & filters.user(MY_USER_ID))
 async def clear_all_media_callback(client, cq):
     try:
         photos = get_photo_files()
@@ -633,201 +538,8 @@ async def solitaire_callback_handler(client, cq):
     
     await cq.answer()
 
-# --- Multiplayer Game Handlers ---
-@bot.on_message(filters.command("playcards"))
-async def multiplayer_handler(client, msg: Message):
-    user_id = msg.from_user.id
-    
-    # Check if already in a game
-    for game_id, game in mp_games.items():
-        if user_id in game.players:
-            await msg.reply_text("You're already in a game! Finish it first.")
-            return
-    
-    if mp_waiting_queue and mp_waiting_queue[0] != user_id:
-        # Match with waiting player
-        p1 = mp_waiting_queue.pop(0)
-        p2 = user_id
-        game_id = f"{p1}_{p2}_{random.randint(1000, 9999)}"
-        game = MultiplayerCardGame(p1, p2)
-        game.deal_initial_hands()
-        mp_games[game_id] = game
-        
-        # Send initial game messages
-        await send_mp_update(game_id, "Game started!")
-    else:
-        # Add to queue
-        mp_waiting_queue.append(user_id)
-        await msg.reply_text(
-            "You're in the queue. Waiting for an opponent...\n"
-            "Use /cancelqueue to leave.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ Cancel", callback_data="mp_cancel_queue")]
-            ])
-        )
-
-async def send_mp_update(game_id: str, message: str = ""):
-    game = mp_games.get(game_id)
-    if not game:
-        return
-    
-    for player_id in game.players:
-        opponent_id = next(p for p in game.players if p != player_id)
-        
-        game_text = (
-            f"🎴 Multiplayer Card Game\n\n"
-            f"Top card: {game.discard_pile[-1] if game.discard_pile else 'None'}\n"
-            f"Cards left: You: {len(game.players[player_id]['hand'])}, Opponent: {len(game.players[opponent_id]['hand'])}\n"
-            f"Turn: {'Your turn' if game.current_turn == player_id else 'Opponent turn'}\n\n"
-        )
-        
-        if message:
-            game_text += f"{message}\n\n"
-        
-        if game.game_over:
-            if game.winner == player_id:
-                game_text += "🎉 You won! 🎉"
-            else:
-                game_text += "😔 You lost!"
-        else:
-            game_text += f"Your hand: {game.get_hand_display(player_id)}\n"
-            game_text += "✅ = Playable, ❌ = Can't play"
-        
-        keyboard = game.build_game_keyboard(player_id)
-        
-        if player_id in game.messages:
-            try:
-                await game.messages[player_id].edit_text(game_text, reply_markup=keyboard)
-            except:
-                game.messages[player_id] = await bot.send_message(player_id, game_text, reply_markup=keyboard)
-        else:
-            game.messages[player_id] = await bot.send_message(player_id, game_text, reply_markup=keyboard)
-
-@bot.on_message(filters.command("cancelqueue"))
-async def cancel_queue_handler(client, msg: Message):
-    user_id = msg.from_user.id
-    if user_id in mp_waiting_queue:
-        mp_waiting_queue.remove(user_id)
-        await msg.reply_text("You left the queue.")
-    else:
-        await msg.reply_text("You're not in any queue.")
-
-@bot.on_callback_query(filters.regex("mp_cancel_queue"))
-async def mp_cancel_queue_callback(client, cq):
-    user_id = cq.from_user.id
-    if user_id in mp_waiting_queue:
-        mp_waiting_queue.remove(user_id)
-        await cq.message.edit_text("You left the queue.")
-    await cq.answer()
-
-@bot.on_callback_query(filters.regex(r"mp_play_(\d+)_(.+)"))
-async def mp_play_callback(client, cq):
-    player_id = int(cq.data.split("_")[2])
-    card = "_".join(cq.data.split("_")[3:])
-    
-    if cq.from_user.id != player_id:
-        await cq.answer("Not your game!", show_alert=True)
-        return
-    
-    game_id = next((gid for gid, game in mp_games.items() if player_id in game.players), None)
-    if not game_id:
-        await cq.answer("Game not found", show_alert=True)
-        return
-    
-    game = mp_games[game_id]
-    success, message = game.play_card(player_id, card)
-    
-    if not success:
-        await cq.answer(message, show_alert=True)
-    else:
-        await send_mp_update(game_id, f"Player played {card}")
-        if game.game_over:
-            await asyncio.sleep(2)
-            await send_mp_update(game_id)
-    
-    await cq.answer()
-
-@bot.on_callback_query(filters.regex(r"mp_draw_(\d+)"))
-async def mp_draw_callback(client, cq):
-    player_id = int(cq.data.split("_")[2])
-    
-    if cq.from_user.id != player_id:
-        await cq.answer("Not your game!", show_alert=True)
-        return
-    
-    game_id = next((gid for gid, game in mp_games.items() if player_id in game.players), None)
-    if not game_id:
-        await cq.answer("Game not found", show_alert=True)
-        return
-    
-    game = mp_games[game_id]
-    success, message = game.draw_card(player_id)
-    
-    if success:
-        await send_mp_update(game_id, message)
-    else:
-        await cq.answer(message, show_alert=True)
-    
-    await cq.answer()
-
-@bot.on_callback_query(filters.regex(r"mp_rematch_(\d+)"))
-async def mp_rematch_callback(client, cq):
-    player_id = int(cq.data.split("_")[2])
-    
-    game_id = next((gid for gid, game in mp_games.items() if player_id in game.players), None)
-    if not game_id:
-        await cq.answer("Game not found", show_alert=True)
-        return
-    
-    game = mp_games[game_id]
-    if not game.game_over:
-        await cq.answer("Game still in progress", show_alert=True)
-        return
-    
-    opponent_id = next(p for p in game.players if p != player_id)
-    key = tuple(sorted([player_id, opponent_id]))
-    
-    mp_rematch_requests.setdefault(key, set()).add(player_id)
-    
-    if len(mp_rematch_requests[key]) == 2:
-        del mp_rematch_requests[key]
-        new_game_id = f"{player_id}_{opponent_id}_{random.randint(1000, 9999)}"
-        new_game = MultiplayerCardGame(player_id, opponent_id)
-        new_game.deal_initial_hands()
-        mp_games[new_game_id] = new_game
-        await send_mp_update(new_game_id, "🔁 Rematch started!")
-    else:
-        await cq.answer("Rematch requested", show_alert=True)
-    
-    await cq.answer()
-
-# --- In-Game Chat ---
-@bot.on_message(filters.command("say") & filters.private)
-async def say_handler(client, msg: Message):
-    parts = msg.text.split(maxsplit=1)
-    if len(parts) != 2:
-        await msg.reply_text("Usage: /say message")
-        return
-    
-    user_id = msg.from_user.id
-    
-    # Check multiplayer games
-    for game_id, game in mp_games.items():
-        if user_id in game.players:
-            opponent_id = next(p for p in game.players if p != user_id)
-            await bot.send_message(opponent_id, f"💬 Message from opponent:\n{parts[1]}")
-            await msg.reply_text("Message sent")
-            return
-    
-    # Check solitaire games (though shouldn't have opponent)
-    if user_id in solitaire_games:
-        await msg.reply_text("No opponent to message in solitaire")
-        return
-    
-    await msg.reply_text("You're not in any active game")
-
-# --- Greeting Management Commands ---
-@bot.on_message(filters.command("setmorning") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+# --- Greeting Management Commands (Admin Only) ---
+@bot.on_message(filters.command("setmorning") & filters.user(MY_USER_ID))
 async def set_morning_handler(client, msg: Message):
     parts = msg.text.split(maxsplit=1)
     if len(parts) != 2:
@@ -836,7 +548,7 @@ async def set_morning_handler(client, msg: Message):
     greetings["morning"] = parts[1]
     await msg.reply_text(f"✅ Morning greeting updated to:\n{parts[1]}")
 
-@bot.on_message(filters.command("setafternoon") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+@bot.on_message(filters.command("setafternoon") & filters.user(MY_USER_ID))
 async def set_afternoon_handler(client, msg: Message):
     parts = msg.text.split(maxsplit=1)
     if len(parts) != 2:
@@ -845,7 +557,7 @@ async def set_afternoon_handler(client, msg: Message):
     greetings["afternoon"] = parts[1]
     await msg.reply_text(f"✅ Afternoon greeting updated to:\n{parts[1]}")
 
-@bot.on_message(filters.command("setnight") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+@bot.on_message(filters.command("setnight") & filters.user(MY_USER_ID))
 async def set_night_handler(client, msg: Message):
     parts = msg.text.split(maxsplit=1)
     if len(parts) != 2:
@@ -854,7 +566,7 @@ async def set_night_handler(client, msg: Message):
     greetings["night"] = parts[1]
     await msg.reply_text(f"✅ Night greeting updated to:\n{parts[1]}")
 
-@bot.on_message(filters.command("viewgreetings") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+@bot.on_message(filters.command("viewgreetings") & filters.user(MY_USER_ID))
 async def view_greetings_handler(client, msg: Message):
     greeting_text = "🌟 Current Greetings:\n\n"
     greeting_text += f"🌅 Morning: {greetings['morning']}\n\n"
@@ -863,14 +575,14 @@ async def view_greetings_handler(client, msg: Message):
     greeting_text += "Use /setmorning, /setafternoon, or /setnight to change them."
     await msg.reply_text(greeting_text)
 
-@bot.on_message(filters.command("resetgreetings") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+@bot.on_message(filters.command("resetgreetings") & filters.user(MY_USER_ID))
 async def reset_greetings_handler(client, msg: Message):
     greetings["morning"] = "🌞 Good morning bestie have a nice day! 💖"
     greetings["afternoon"] = "🌞 Good Afternoon Kritika Eat well! 💖🎶"
     greetings["night"] = "🌙 Good night Dumb Jigs I Like u the most 💫"
     await msg.reply_text("✅ All greetings have been reset to default!")
 
-@bot.on_message(filters.command("testgreetings") & filters.user([BESTIE_USER_ID, MY_USER_ID]))
+@bot.on_message(filters.command("testgreetings") & filters.user(MY_USER_ID))
 async def test_greetings_handler(client, msg: Message):
     await msg.reply_text("🧪 Testing all greetings:")
     await asyncio.sleep(1)
@@ -883,16 +595,12 @@ async def test_greetings_handler(client, msg: Message):
 # --- Misc Commands ---
 @bot.on_message(filters.command("start"))
 async def start_handler(client, msg: Message):
-    base_text = (
-        "Hey Dumb! 💌\n\nI'm your special bot made with love.\nCommands:\n"
-        "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
-        "/id – your ID 🔍\n/solitaire – play classic solitaire 🃏\n/playcards – multiplayer card game 🎴\n"
-        "/cancelqueue – leave matchmaking queue ❌\n/say – send message to opponent 💬"
-    )
-    
-    if msg.from_user.id in [BESTIE_USER_ID, MY_USER_ID]:
-        base_text += (
-            "\n\n🔧 Admin Commands:\n"
+    if msg.from_user.id == MY_USER_ID:
+        base_text = (
+            "Hey Admin! 💌\n\nI'm your special bot.\nCommands:\n"
+            "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
+            "/id – your ID 🔍\n/solitaire – play classic solitaire 🃏\n"
+            "🔧 Admin Commands:\n"
             "/viewgreetings – see current greetings 👀\n"
             "/setmorning – change morning message 🌅\n"
             "/setafternoon – change afternoon message 🌞\n"
@@ -905,6 +613,12 @@ async def start_handler(client, msg: Message):
             "/listmedia – view media collection 📋\n"
             "/clearmedia – clear media files 🗑️\n"
             "/done or /cancel – exit upload mode ✅"
+        )
+    else:
+        base_text = (
+            "Hey there! 💌\n\nI'm a special bot.\nCommands:\n"
+            "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
+            "/id – your ID 🔍\n/solitaire – play classic solitaire 🃏"
         )
     
     await msg.reply_text(base_text)
