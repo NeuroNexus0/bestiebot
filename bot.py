@@ -966,47 +966,99 @@ async def get_user_id(client: Client, msg: Message):
     """Get user ID"""
     await msg.reply_text(f"Your user ID: {msg.from_user.id}")
 
+# --- Command Access Levels ---
 @bot.on_message(filters.command("start"))
-async def start_handler(client: Client, msg: Message):
+async def start_command(client: Client, msg: Message):
+    """Welcome message with user-specific information and commands"""
     user_id = msg.from_user.id
-    name = msg.from_user.first_name or "there"
+    
+    if user_id == MY_USER_ID:  # Admin
+        welcome_text = """
+👑 *Admin Panel*
 
-    base_text = (
-        f"👋 Hello, *{name}*!\n\n"
-        "Welcome to *BestieBot*! 💖\n"
-        "Here’s what you can do:\n\n"
-        "💖 *Daily & Fun Commands*:\n"
-        "• /dailyq – See today’s questions\n"
-        "• /quote – Get a random quote\n"
-        "• /photo – Receive a surprise photo\n"
-        "• /music – Vibe with a random song\n"
-        "• /ttt – Play Tic Tac Toe vs bot\n"
-        "• /onlinettt – Multiplayer Tic Tac Toe\n"
-        "• /cancelqueue – Leave multiplayer queue\n"
-        "• /say <message> – Chat with your opponent\n"
-        "• /id – Show your Telegram ID\n"
-    )
+Welcome back! Here are your available commands:
 
-    admin_text = (
-        "\n🛠️ *Admin Commands*:\n"
-        "• /addmorningq, /addeveningq <q>\n"
-        "• /removemq, /removeeq <index>\n"
-        "• /listquestions\n"
-        "• /setmorningcount, /seteveningcount <n>\n"
-        "• /setmorningtime, /seteveningtime HH:MM\n"
-        "• /questionstatus\n"
-        "• /addquote, /removequote <i>, /listquotes\n"
-        "• /setmorning, /setafternoon, /setnight <msg>\n"
-        "• /listgreetings\n"
-        "• /setgreetingtime <type> HH:MM\n"
-        "• /getcode, /updatecode\n"
-    )
+🛠️ *Admin Commands*:
 
-    final_message = base_text
-    if user_id == MY_USER_ID:
-        final_message += admin_text
+*Daily Questions:*
+/addmorningq <question> - Add morning question
+/addeveningq <question> - Add evening question
+/listquestions - List all questions
+/removemq <index> - Remove morning question
+/removeeq <index> - Remove evening question
+/setmorningcount <number> - Set morning question count
+/seteveningcount <number> - Set evening question count
+/setmorningtime HH:MM - Set morning question time
+/seteveningtime HH:MM - Set evening question time
+/questionstatus - Show question settings
 
-    await msg.reply_text(final_message, parse_mode="markdown")
+*Greetings:*
+/setmorning <text> - Set morning greeting
+/setafternoon <text> - Set afternoon greeting
+/setnight <text> - Set night greeting
+/listgreetings - List current greetings
+/setgreetingtime <type> HH:MM - Set greeting time
+
+*Quotes:*
+/addquote <text> - Add new quote
+/removequote <index> - Remove quote
+/listquotes - List all quotes
+
+*System:*
+/restart - Restart the bot
+/id - Show your user ID
+"""
+    elif user_id == BESTIE_USER_ID:  # Bestie
+        welcome_text = f"""
+💖 *Welcome Bestie!* 💖
+
+Here's what I can do for you:
+
+💖 *Bestie Commands*:
+/dailyq - See today's questions
+/quote - Get random sweet message
+/photo - Get random photo
+/music - Get random song
+/id - Show your user ID
+
+🎮 *Games*:
+/ttt - Play Tic-Tac-Toe vs bot
+/onlinettt - Play Tic-Tac-Toe vs friend
+/cancelqueue - Leave matchmaking queue
+/say <message> - Send message to opponent
+"""
+    else:  # Normal user
+        welcome_text = """
+👋 *Welcome!*
+
+Available Commands:
+/id - Show your user ID
+/ttt - Play Tic-Tac-Toe vs bot
+/onlinettt - Play Tic-Tac-Toe vs friend
+/cancelqueue - Leave matchmaking queue
+/say <message> - Send message to opponent
+"""
+
+    await msg.reply_text(welcome_text.strip(), parse_mode="markdown")
+
+# --- Admin-only Commands ---
+@bot.on_message(filters.command("restart") & filters.user(MY_USER_ID))
+async def restart_command(client: Client, msg: Message):
+    """Restart the bot (admin only)"""
+    await msg.reply_text("🔄 Restarting bot...")
+    await restart_bot()
+
+# --- Bestie-only Commands ---
+@bot.on_message(filters.command(["photo", "music", "quote"]) & ~filters.user(BESTIE_USER_ID))
+async def bestie_only_commands(client: Client, msg: Message):
+    """Handle unauthorized access to bestie-only commands"""
+    await msg.reply_text("This feature is only available for special users! 💖")
+
+# --- Update the handle_bestie_answer function to include command filtering ---
+@bot.on_message(filters.private & filters.user(BESTIE_USER_ID) & ~filters.command())
+async def handle_bestie_answer(client: Client, msg: Message):
+    """Handle answers from bestie user for both morning and evening questions"""
+    # ... (keep existing implementation from earlier)
 
 # --- Startup and Shutdown ---
 @app.on_event("startup")
