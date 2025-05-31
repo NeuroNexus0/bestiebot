@@ -362,20 +362,26 @@ async def start_handler(client, msg):
     await msg.reply_text(base_text)
 
 @bot.on_message(filters.command("quote"))
-async def quote_handler(client, msg): await msg.reply_text(random.choice(quotes))
+async def quote_handler(client, msg): 
+    await msg.reply_text(random.choice(quotes))
 
 @bot.on_message(filters.command(["photo", "vibe"]))
 async def photo_handler(client, msg):
-    if photo_files: await msg.reply_photo(random.choice(photo_files))
-    else: await msg.reply_text("No photos!"))
+    if photo_files: 
+        await msg.reply_photo(random.choice(photo_files))
+    else: 
+        await msg.reply_text("No photos!")
 
 @bot.on_message(filters.command("music"))
 async def music_handler(client, msg):
-    if song_files: await msg.reply_audio(audio=random.choice(song_files), caption="Vibe 🎧")
-    else: await msg.reply_text("No songs!"))
+    if song_files: 
+        await msg.reply_audio(audio=random.choice(song_files), caption="Vibe 🎧")
+    else: 
+        await msg.reply_text("No songs!")
 
 @bot.on_message(filters.command("id"))
-async def id_handler(client, msg): await msg.reply_text(f"Your user ID is: {msg.from_user.id}")
+async def id_handler(client, msg): 
+    await msg.reply_text(f"Your user ID is: {msg.from_user.id}")
 
 # --- Daily Messages ---
 
@@ -402,7 +408,8 @@ async def telegram_webhook(request: Request):
     return PlainTextResponse("ok")
 
 @app.get("/")
-async def root(): return {"message": "Bestie Bot is running!"}
+async def root(): 
+    return {"message": "Bestie Bot is running!"}
 
 @app.on_event("startup")
 async def startup_event():
