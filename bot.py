@@ -13,9 +13,9 @@ from typing import Dict, List, Tuple, Optional, Set
 
 # --- Environment Setup ---
 API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+API_HASH = os.getenv("API_HASH"))
+BOT_TOKEN = os.getenv("BOT_TOKEN"))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL"))
 PORT = int(os.getenv("PORT", 8000))
 
 bot = Client("bestie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -63,217 +63,99 @@ upload_mode = {"photo": False, "song": False}
 SUITS = ["♠️", "♥️", "♦️", "♣️"]
 VALUES = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
 
-# --- Single Player Solitaire Game ---
-class SolitaireGame:
-    def __init__(self, user_id: int):
-        self.user_id = user_id
-        self.deck = self.create_deck()
-        self.foundations = {suit: [] for suit in SUITS}
-        self.tableau = [[] for _ in range(7)]  # 7 piles
-        self.stock = []
-        self.waste = []
-        self.selected_card = None
-        self.selected_pile = None
+# --- Tic-Tac-Toe Game Implementation ---
+class TicTacToeGame:
+    def __init__(self, player1_id: int, player2_id: Optional[int] = None):
+        self.board = [[" " for _ in range(3)] for _ in range(3)]
+        self.players = [player1_id, player2_id] if player2_id else [player1_id]
+        self.current_player = 0
+        self.game_over = False
+        self.winner = None
         self.message_obj = None
-        
-        # Deal cards to tableau
-        for i in range(7):
-            for j in range(i, 7):
-                card = self.deck.pop()
-                if j == i:  # Last card in each pile is face up
-                    self.tableau[j].append(card)
-                else:
-                    self.tableau[j].append(f"❓{card}")  # Face down
-        
-        self.stock = self.deck
+        self.is_online = player2_id is not None
     
-    def create_deck(self) -> List[str]:
-        deck = [f"{value}{suit}" for suit in SUITS for value in VALUES]
-        random.shuffle(deck)
-        return deck
-    
-    def get_card_value(self, card: str) -> int:
-        value = card[:-2]
-        return {"A": 1, "J": 11, "Q": 12, "K": 13}.get(value, int(value))
-    
-    def get_card_color(self, card: str) -> str:
-        return "red" if card[-2:] in ["♥️", "♦️"] else "black"
-    
-    def is_valid_sequence(self, card1: str, card2: str) -> bool:
-        return (self.get_card_value(card1) == self.get_card_value(card2) + 1 and
-                self.get_card_color(card1) != self.get_card_color(card2))
-    
-    def is_valid_foundation_move(self, card: str, suit: str) -> bool:
-        foundation = self.foundations[suit]
-        if not foundation:
-            return self.get_card_value(card) == 1
-        return (self.get_card_value(card) == self.get_card_value(foundation[-1]) + 1 and
-                card[-2:] == foundation[-1][-2:])
-    
-    def draw_from_stock(self) -> bool:
-        if not self.stock and not self.waste:
+    def make_move(self, row: int, col: int) -> bool:
+        if self.game_over or row < 0 or row > 2 or col < 0 or col > 2 or self.board[row][col] != " ":
             return False
         
-        if not self.stock:
-            self.stock = self.waste[::-1]
-            self.waste = []
+        symbol = "X" if self.current_player == 0 else "O"
+        self.board[row][col] = symbol
         
-        num_to_draw = min(3, len(self.stock))
-        for _ in range(num_to_draw):
-            self.waste.append(self.stock.pop())
+        if self.check_winner(symbol):
+            self.game_over = True
+            self.winner = self.players[self.current_player]
+        elif self.is_board_full():
+            self.game_over = True
+        else:
+            self.current_player = 1 - self.current_player
+        
         return True
     
-    def select_card(self, pile_type: str, pile_index: int, card_index: int) -> bool:
-        if pile_type == "tableau":
-            pile = self.tableau[pile_index]
-            if card_index >= len(pile) or pile[card_index].startswith("❓"):
-                return False
-            self.selected_card = pile[card_index]
-            self.selected_pile = (pile_type, pile_index, card_index)
+    def check_winner(self, symbol: str) -> bool:
+        # Check rows
+        for row in self.board:
+            if all(cell == symbol for cell in row):
+                return True
+        
+        # Check columns
+        for col in range(3):
+            if all(self.board[row][col] == symbol for row in range(3)):
+                return True
+        
+        # Check diagonals
+        if all(self.board[i][i] == symbol for i in range(3)):
             return True
-        elif pile_type == "waste" and self.waste:
-            self.selected_card = self.waste[-1]
-            self.selected_pile = (pile_type, -1, -1)
+        if all(self.board[i][2-i] == symbol for i in range(3)):
             return True
-        elif pile_type == "foundation" and self.foundations[pile_index]:
-            self.selected_card = self.foundations[pile_index][-1]
-            self.selected_pile = (pile_type, pile_index, -1)
-            return True
+        
         return False
     
-    def move_card(self, pile_type: str, pile_index: int) -> Tuple[bool, str]:
-        if not self.selected_card:
-            return False, "No card selected"
-        
-        card = self.selected_card
-        
-        if pile_type == "tableau":
-            dest_pile = self.tableau[pile_index]
-            if not dest_pile:
-                if self.get_card_value(card) != 13:
-                    return False, "Only Kings can be placed on empty piles"
-            elif not self.is_valid_sequence(dest_pile[-1], card):
-                return False, "Invalid sequence"
-            self._complete_move(pile_type, pile_index)
-            return True, "Card moved"
-        
-        elif pile_type == "foundation":
-            suit = card[-2:]
-            if not self.is_valid_foundation_move(card, suit):
-                return False, "Invalid foundation move"
-            self._complete_move("foundation", suit)
-            return True, "Card moved to foundation"
-        
-        return False, "Invalid move"
+    def is_board_full(self) -> bool:
+        return all(cell != " " for row in self.board for cell in row)
     
-    def _complete_move(self, dest_type: str, dest_index: int):
-        src_type, src_index, card_index = self.selected_pile
+    def render_board(self) -> str:
+        board_str = "🅇 Tic-Tac-Toe 🅇\n\n"
+        for row in self.board:
+            board_str += " | ".join(cell if cell != " " else "⬜️" for cell in row) + "\n"
+            board_str += "---------\n"
         
-        if src_type == "tableau":
-            cards = self.tableau[src_index][card_index:]
-            self.tableau[src_index] = self.tableau[src_index][:card_index]
-            
-            if self.tableau[src_index] and self.tableau[src_index][-1].startswith("❓"):
-                hidden_card = self.tableau[src_index][-1][1:]
-                self.tableau[src_index][-1] = hidden_card
-            
-            if dest_type == "tableau":
-                self.tableau[dest_index].extend(cards)
+        if self.game_over:
+            if self.winner:
+                board_str += f"\n🎉 Player {self.players.index(self.winner)+1} wins! 🎉"
             else:
-                self.foundations[dest_index].extend(cards)
+                board_str += "\n🤝 It's a draw! 🤝"
+        else:
+            player_num = self.current_player + 1
+            board_str += f"\nPlayer {player_num}'s turn ({'X' if self.current_player == 0 else 'O'})"
         
-        elif src_type == "waste":
-            card = self.waste.pop()
-            if dest_type == "tableau":
-                self.tableau[dest_index].append(card)
-            else:
-                self.foundations[dest_index].append(card)
-        
-        elif src_type == "foundation":
-            card = self.foundations[src_index].pop()
-            if dest_type == "tableau":
-                self.tableau[dest_index].append(card)
-        
-        self.selected_card = None
-        self.selected_pile = None
-    
-    def check_win(self) -> bool:
-        return all(foundation and self.get_card_value(foundation[-1]) == 13
-                   for foundation in self.foundations.values())
-    
-    def render_game(self) -> str:
-        foundation_row = " ".join(
-            f"{suit}: {foundation[-1] if foundation else '--'}"
-            for suit, foundation in self.foundations.items()
-        )
-        
-        stock_waste = f"Stock: {len(self.stock)} | Waste: {self.waste[-1] if self.waste else '--'}"
-        
-        tableau_rows = []
-        max_height = max(len(pile) for pile in self.tableau)
-        for i in range(max_height):
-            row = []
-            for pile in self.tableau:
-                row.append(pile[i] if i < len(pile) else "  ")
-            tableau_rows.append(" ".join(row))
-        
-        selected_info = f"\n\nSelected: {self.selected_card}" if self.selected_card else ""
-        status = "\n\n🎉 YOU WIN! 🎉" if self.check_win() else ""
-        
-        return (
-            "🃏 SOLITAIRE 🃏\n\n"
-            f"{foundation_row}\n"
-            f"{stock_waste}\n\n"
-            "Tableau:\n" + "\n".join(tableau_rows) +
-            selected_info + status
-        )
+        return board_str
     
     def build_keyboard(self) -> InlineKeyboardMarkup:
         keyboard = []
+        for row in range(3):
+            keyboard_row = []
+            for col in range(3):
+                cell = self.board[row][col]
+                if cell == " ":
+                    text = "⬜️"
+                    callback_data = f"ttt_move_{row}_{col}"
+                else:
+                    text = "❌" if cell == "X" else "⭕️"
+                    callback_data = "ttt_invalid"
+                keyboard_row.append(InlineKeyboardButton(text, callback_data=callback_data))
+            keyboard.append(keyboard_row)
         
-        # Stock/Waste row
-        keyboard.append([
-            InlineKeyboardButton("🂠 Draw", callback_data="solitaire_draw"),
-            InlineKeyboardButton(f"Waste: {'🂮' if self.waste else '🂠'}", 
-                                callback_data="solitaire_waste")
-        ])
-        
-        # Foundations row
-        keyboard.append([
-            InlineKeyboardButton(f"F: {foundation[-1] if foundation else suit}", 
-                                callback_data=f"solitaire_foundation_{suit}")
-            for suit, foundation in self.foundations.items()
-        ])
-        
-        # Tableau headers
-        keyboard.append([
-            InlineKeyboardButton(f"Pile {i+1}", callback_data=f"solitaire_pile_{i}_header")
-            for i in range(7)
-        ])
-        
-        # Tableau top cards
-        keyboard.append([
-            InlineKeyboardButton(
-                pile[-1] if pile and not pile[-1].startswith("❓") else "🂠",
-                callback_data=f"solitaire_pile_{i}_top"
-            ) if pile else InlineKeyboardButton("🂠", callback_data=f"solitaire_pile_{i}_top")
-            for i, pile in enumerate(self.tableau)
-        ])
-        
-        # Action buttons
-        action_buttons = []
-        if self.selected_card:
-            action_buttons.append(InlineKeyboardButton("↩️ Cancel", callback_data="solitaire_cancel"))
-        action_buttons.extend([
-            InlineKeyboardButton("♻️ New Game", callback_data="solitaire_new"),
-            InlineKeyboardButton("❌ Quit", callback_data="solitaire_quit")
-        ])
-        keyboard.append(action_buttons)
+        if self.game_over:
+            keyboard.append([InlineKeyboardButton("🔄 New Game", callback_data="ttt_new")])
+        keyboard.append([InlineKeyboardButton("❌ Quit", callback_data="ttt_quit")])
         
         return InlineKeyboardMarkup(keyboard)
 
 # --- Game State Management ---
 solitaire_games: Dict[int, SolitaireGame] = {}
+ttt_games: Dict[int, TicTacToeGame] = {}  # Single player games
+online_ttt_games: Dict[str, TicTacToeGame] = {}  # Multiplayer games
+ttt_waiting_queue: List[int] = []
 
 # --- Media Upload Handlers (Admin Only) ---
 @bot.on_message(filters.command("addphoto") & filters.user(MY_USER_ID))
@@ -538,6 +420,208 @@ async def solitaire_callback_handler(client, cq):
     
     await cq.answer()
 
+# --- Tic-Tac-Toe Handlers ---
+@bot.on_message(filters.command("ttt"))
+async def ttt_handler(client, msg: Message):
+    user_id = msg.from_user.id
+    
+    if user_id in ttt_games or any(user_id in game.players for game in online_ttt_games.values()):
+        await msg.reply_text("You're already in a Tic-Tac-Toe game! Finish it first.")
+        return
+    
+    game = TicTacToeGame(user_id)
+    ttt_games[user_id] = game
+    game.message_obj = await msg.reply_text(
+        game.render_board(),
+        reply_markup=game.build_keyboard()
+    )
+
+@bot.on_message(filters.command("onlinettt"))
+async def online_ttt_handler(client, msg: Message):
+    user_id = msg.from_user.id
+    
+    # Check if already in a game
+    if user_id in ttt_games or any(user_id in game.players for game in online_ttt_games.values()):
+        await msg.reply_text("You're already in a Tic-Tac-Toe game! Finish it first.")
+        return
+    
+    if ttt_waiting_queue and ttt_waiting_queue[0] != user_id:
+        # Match with waiting player
+        p1 = ttt_waiting_queue.pop(0)
+        p2 = user_id
+        game_id = f"{p1}_{p2}_{random.randint(1000, 9999)}"
+        game = TicTacToeGame(p1, p2)
+        online_ttt_games[game_id] = game
+        
+        # Send initial game messages
+        await send_ttt_update(game_id, "Game started!")
+    else:
+        # Add to queue
+        ttt_waiting_queue.append(user_id)
+        await msg.reply_text(
+            "You're in the queue. Waiting for an opponent...\n"
+            "Use /cancelqueue to leave.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel", callback_data="ttt_cancel_queue")]
+            ])
+        )
+
+async def send_ttt_update(game_id: str, message: str = ""):
+    game = online_ttt_games.get(game_id)
+    if not game:
+        return
+    
+    for player_id in game.players:
+        game_text = game.render_board()
+        if message:
+            game_text = f"{message}\n\n{game_text}"
+        
+        keyboard = game.build_keyboard()
+        
+        if player_id in game.messages:
+            try:
+                await game.messages[player_id].edit_text(game_text, reply_markup=keyboard)
+            except:
+                game.messages[player_id] = await bot.send_message(player_id, game_text, reply_markup=keyboard)
+        else:
+            game.messages[player_id] = await bot.send_message(player_id, game_text, reply_markup=keyboard)
+
+@bot.on_message(filters.command("cancelqueue"))
+async def cancel_queue_handler(client, msg: Message):
+    user_id = msg.from_user.id
+    if user_id in ttt_waiting_queue:
+        ttt_waiting_queue.remove(user_id)
+        await msg.reply_text("You left the queue.")
+    else:
+        await msg.reply_text("You're not in any queue.")
+
+@bot.on_callback_query(filters.regex("ttt_cancel_queue"))
+async def ttt_cancel_queue_callback(client, cq):
+    user_id = cq.from_user.id
+    if user_id in ttt_waiting_queue:
+        ttt_waiting_queue.remove(user_id)
+        await cq.message.edit_text("You left the queue.")
+    await cq.answer()
+
+@bot.on_callback_query(filters.regex(r"^ttt_"))
+async def ttt_callback_handler(client, cq):
+    user_id = cq.from_user.id
+    
+    # Check single player games
+    if user_id in ttt_games:
+        game = ttt_games[user_id]
+        data = cq.data
+        
+        if data.startswith("ttt_move_"):
+            if game.game_over or game.current_player != 0:  # Only player 1 in single player
+                await cq.answer("Not your turn!", show_alert=True)
+                return
+            
+            _, _, row, col = data.split("_")
+            row, col = int(row), int(col)
+            
+            if game.make_move(row, col):
+                if game.game_over:
+                    await cq.message.edit_text(
+                        game.render_board(),
+                        reply_markup=game.build_keyboard()
+                    )
+                else:
+                    # AI move (simple random)
+                    empty_cells = [(r, c) for r in range(3) for c in range(3) if game.board[r][c] == " "]
+                    if empty_cells:
+                        ai_row, ai_col = random.choice(empty_cells)
+                        game.make_move(ai_row, ai_col)
+                    
+                    await cq.message.edit_text(
+                        game.render_board(),
+                        reply_markup=game.build_keyboard()
+                    )
+            else:
+                await cq.answer("Invalid move!", show_alert=True)
+        
+        elif data == "ttt_new":
+            game = TicTacToeGame(user_id)
+            ttt_games[user_id] = game
+            await cq.message.edit_text(
+                game.render_board(),
+                reply_markup=game.build_keyboard()
+            )
+        
+        elif data == "ttt_quit":
+            del ttt_games[user_id]
+            await cq.message.edit_text("Game ended. Use /ttt to play again.")
+        
+        await cq.answer()
+        return
+    
+    # Check multiplayer games
+    game_id = next((gid for gid, game in online_ttt_games.items() if user_id in game.players), None)
+    if not game_id:
+        await cq.answer("Game not found", show_alert=True)
+        return
+    
+    game = online_ttt_games[game_id]
+    data = cq.data
+    
+    if data.startswith("ttt_move_"):
+        if game.game_over or game.players[game.current_player] != user_id:
+            await cq.answer("Not your turn!", show_alert=True)
+            return
+        
+        _, _, row, col = data.split("_")
+        row, col = int(row), int(col)
+        
+        if game.make_move(row, col):
+            await send_ttt_update(game_id)
+        else:
+            await cq.answer("Invalid move!", show_alert=True)
+    
+    elif data == "ttt_new":
+        if game.game_over:
+            p1, p2 = game.players
+            new_game_id = f"{p1}_{p2}_{random.randint(1000, 9999)}"
+            new_game = TicTacToeGame(p1, p2)
+            online_ttt_games[new_game_id] = new_game
+            del online_ttt_games[game_id]
+            await send_ttt_update(new_game_id, "🔁 New game started!")
+        else:
+            await cq.answer("Game still in progress", show_alert=True)
+    
+    elif data == "ttt_quit":
+        if game.game_over:
+            del online_ttt_games[game_id]
+            await cq.message.edit_text("Game ended. Use /onlinettt to play again.")
+        else:
+            await cq.answer("Finish the game first!", show_alert=True)
+    
+    await cq.answer()
+
+# --- In-Game Chat ---
+@bot.on_message(filters.command("say") & filters.private)
+async def say_handler(client, msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) != 2:
+        await msg.reply_text("Usage: /say message")
+        return
+    
+    user_id = msg.from_user.id
+    
+    # Check Tic-Tac-Toe games
+    for game_id, game in online_ttt_games.items():
+        if user_id in game.players:
+            opponent_id = next(p for p in game.players if p != user_id)
+            await bot.send_message(opponent_id, f"💬 Message from opponent:\n{parts[1]}")
+            await msg.reply_text("Message sent")
+            return
+    
+    # Check solitaire games (though shouldn't have opponent)
+    if user_id in solitaire_games:
+        await msg.reply_text("No opponent to message in solitaire")
+        return
+    
+    await msg.reply_text("You're not in any active game")
+
 # --- Greeting Management Commands (Admin Only) ---
 @bot.on_message(filters.command("setmorning") & filters.user(MY_USER_ID))
 async def set_morning_handler(client, msg: Message):
@@ -600,6 +684,9 @@ async def start_handler(client, msg: Message):
             "Hey Admin! 💌\n\nI'm your special bot.\nCommands:\n"
             "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
             "/id – your ID 🔍\n/solitaire – play classic solitaire 🃏\n"
+            "/ttt – play Tic-Tac-Toe (vs AI) ❌⭕️\n"
+            "/onlinettt – play Tic-Tac-Toe with a friend 🎮\n"
+            "/cancelqueue – leave matchmaking queue ❌\n/say – send message to opponent 💬\n\n"
             "🔧 Admin Commands:\n"
             "/viewgreetings – see current greetings 👀\n"
             "/setmorning – change morning message 🌅\n"
@@ -618,7 +705,10 @@ async def start_handler(client, msg: Message):
         base_text = (
             "Hey there! 💌\n\nI'm a special bot.\nCommands:\n"
             "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
-            "/id – your ID 🔍\n/solitaire – play classic solitaire 🃏"
+            "/id – your ID 🔍\n/solitaire – play classic solitaire 🃏\n"
+            "/ttt – play Tic-Tac-Toe (vs AI) ❌⭕️\n"
+            "/onlinettt – play Tic-Tac-Toe with a friend 🎮\n"
+            "/cancelqueue – leave matchmaking queue ❌\n/say – send message to opponent 💬"
         )
     
     await msg.reply_text(base_text)
