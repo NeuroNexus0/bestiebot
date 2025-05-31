@@ -9,7 +9,7 @@ import importlib
 import sys
 from io import StringIO
 import datetime
-from typing import Dict, Tuple, List, Optional
+from typing import Dict, Tuple, List, Optional, Union
 
 from pyrogram import Client, filters
 from pyrogram.types import (
@@ -22,6 +22,7 @@ from pyrogram.types import (
 from fastapi import FastAPI, Request
 from starlette.responses import PlainTextResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.job import Job
 
 # --- Environment Setup ---
 API_ID = int(os.getenv("API_ID", 12345))
@@ -46,7 +47,7 @@ quotes = [
     "Just a reminder: You're amazing. No doubt. 💫"
 ]
 
-# --- Split Fill in the Blanks Questions Pool ---
+# --- Fill in the Blanks Questions Pool ---
 daily_questions = [
     "Today I feel _______ because _______.",
     "My favorite memory with you is _______.",
@@ -70,6 +71,12 @@ random.shuffle(daily_questions)
 split_index = len(daily_questions) // 2
 questions_morning = daily_questions[:split_index]
 questions_evening = daily_questions[split_index:]
+
+# --- Question Settings ---
+morning_question_time = "06:00"
+evening_question_time = "18:00"
+morning_question_count = 1
+evening_question_count = 1
 
 # --- Daily Question States ---
 current_morning_question = {"question": "", "date": None, "answered": False}
@@ -155,17 +162,42 @@ def build_board_keyboard(board: List[str], prefix: str = "ttt") -> InlineKeyboar
         kb.append(row)
     return InlineKeyboardMarkup(kb)
 
+def parse_time(time_str: str) -> Tuple[int, int]:
+    """Parse HH:MM format time string into (hour, minute) tuple"""
+    try:
+        hour, minute = map(int, time_str.split(":"))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError
+        return hour, minute
+    except ValueError:
+        raise ValueError("Invalid time format. Use HH:MM (24-hour format)")
+
+def reschedule_job(job_id: str, hour: int, minute: int) -> Job:
+    """Reschedule an existing APScheduler job"""
+    scheduler.remove_job(job_id)
+    return scheduler.add_job(
+        globals()[job_id],
+        'cron',
+        hour=hour,
+        minute=minute,
+        id=job_id
+    )
+
 # --- Daily Question Functions ---
 def get_new_morning_question() -> str:
-    """Get a random question from the morning pool"""
-    return random.choice(questions_morning)
+    """Get random questions from the morning pool"""
+    if not questions_morning:
+        return "How are you feeling today?"
+    return random.sample(questions_morning, min(morning_question_count, len(questions_morning)))
 
 def get_new_evening_question() -> str:
-    """Get a random question from the evening pool"""
-    return random.choice(questions_evening)
+    """Get random questions from the evening pool"""
+    if not questions_evening:
+        return "What was the highlight of your day?"
+    return random.sample(questions_evening, min(evening_question_count, len(questions_evening)))
 
 async def send_morning_question():
-    """Send morning question to bestie user at 12 AM"""
+    """Send morning question to bestie user at scheduled time"""
     today = datetime.date.today()
     
     # Check if we already sent a morning question today
@@ -173,22 +205,25 @@ async def send_morning_question():
         return
     
     # Get new question and update state
-    new_question = get_new_morning_question()
-    current_morning_question["question"] = new_question
+    new_questions = get_new_morning_question()
+    if isinstance(new_questions, str):
+        new_questions = [new_questions]
+    
+    current_morning_question["question"] = "\n".join(new_questions)
     current_morning_question["date"] = today
     current_morning_question["answered"] = False
     
-    # Send question to bestie
+    # Send questions to bestie
     question_text = (
         f"🌅 Morning Question Time! 🌅\n\n"
-        f"📝 {new_question}\n\n"
-        f"Reply with your answer! Your response will be shared with your special someone 💝"
+        f"📝 {current_morning_question['question']}\n\n"
+        f"Reply with your answers! Your response will be shared with your special someone 💝"
     )
     
     await bot.send_message(BESTIE_USER_ID, question_text)
 
 async def send_evening_question():
-    """Send evening question to bestie user at 6 PM"""
+    """Send evening question to bestie user at scheduled time"""
     today = datetime.date.today()
     
     # Check if we already sent an evening question today
@@ -196,19 +231,160 @@ async def send_evening_question():
         return
     
     # Get new question and update state
-    new_question = get_new_evening_question()
-    current_evening_question["question"] = new_question
+    new_questions = get_new_evening_question()
+    if isinstance(new_questions, str):
+        new_questions = [new_questions]
+    
+    current_evening_question["question"] = "\n".join(new_questions)
     current_evening_question["date"] = today
     current_evening_question["answered"] = False
     
     # Send question to bestie
     question_text = (
         f"🌇 Evening Question Time! 🌇\n\n"
-        f"📝 {new_question}\n\n"
-        f"Reply with your answer! Your response will be shared with your special someone 💝"
+        f"📝 {current_evening_question['question']}\n\n"
+        f"Reply with your answers! Your response will be shared with your special someone 💝"
     )
     
     await bot.send_message(BESTIE_USER_ID, question_text)
+
+# --- Admin Question Management Handlers ---
+@bot.on_message(filters.command("addmorningq") & filters.user(MY_USER_ID))
+async def add_morning_question(client: Client, msg: Message):
+    """Add a new question to the morning pool"""
+    question = msg.text.split(maxsplit=1)
+    if len(question) < 2:
+        await msg.reply_text("Usage: /addmorningq <question>")
+        return
+    
+    questions_morning.append(question[1])
+    await msg.reply_text(f"✅ Added morning question:\n{question[1]}")
+
+@bot.on_message(filters.command("addeveningq") & filters.user(MY_USER_ID))
+async def add_evening_question(client: Client, msg: Message):
+    """Add a new question to the evening pool"""
+    question = msg.text.split(maxsplit=1)
+    if len(question) < 2:
+        await msg.reply_text("Usage: /addeveningq <question>")
+        return
+    
+    questions_evening.append(question[1])
+    await msg.reply_text(f"✅ Added evening question:\n{question[1]}")
+
+@bot.on_message(filters.command("listquestions") & filters.user(MY_USER_ID))
+async def list_questions(client: Client, msg: Message):
+    """List all questions with indices"""
+    morning_text = "🌅 Morning Questions:\n" + "\n".join(
+        f"{i+1}. {q}" for i, q in enumerate(questions_morning)
+    ) if questions_morning else "No morning questions yet!"
+    
+    evening_text = "\n\n🌇 Evening Questions:\n" + "\n".join(
+        f"{i+1}. {q}" for i, q in enumerate(questions_evening)
+    ) if questions_evening else "\nNo evening questions yet!"
+    
+    await msg.reply_text(morning_text + evening_text)
+
+@bot.on_message(filters.command("removemq") & filters.user(MY_USER_ID))
+async def remove_morning_question(client: Client, msg: Message):
+    """Remove a morning question by index"""
+    try:
+        index = int(msg.text.split(maxsplit=1)[1]) - 1
+        if 0 <= index < len(questions_morning):
+            removed = questions_morning.pop(index)
+            await msg.reply_text(f"✅ Removed morning question:\n{removed}")
+        else:
+            await msg.reply_text("❌ Invalid index. Use /listquestions to see indices.")
+    except (ValueError, IndexError):
+        await msg.reply_text("Usage: /removemq <index>")
+
+@bot.on_message(filters.command("removeeq") & filters.user(MY_USER_ID))
+async def remove_evening_question(client: Client, msg: Message):
+    """Remove an evening question by index"""
+    try:
+        index = int(msg.text.split(maxsplit=1)[1]) - 1
+        if 0 <= index < len(questions_evening):
+            removed = questions_evening.pop(index)
+            await msg.reply_text(f"✅ Removed evening question:\n{removed}")
+        else:
+            await msg.reply_text("❌ Invalid index. Use /listquestions to see indices.")
+    except (ValueError, IndexError):
+        await msg.reply_text("Usage: /removeeq <index>")
+
+@bot.on_message(filters.command("setmorningcount") & filters.user(MY_USER_ID))
+async def set_morning_count(client: Client, msg: Message):
+    """Set how many morning questions to send"""
+    try:
+        count = int(msg.text.split(maxsplit=1)[1])
+        if count <= 0:
+            await msg.reply_text("❌ Count must be at least 1")
+            return
+        
+        global morning_question_count
+        morning_question_count = min(count, 5)  # Limit to 5 questions max
+        await msg.reply_text(f"✅ Morning question count set to {morning_question_count}")
+    except (ValueError, IndexError):
+        await msg.reply_text("Usage: /setmorningcount <number>")
+
+@bot.on_message(filters.command("seteveningcount") & filters.user(MY_USER_ID))
+async def set_evening_count(client: Client, msg: Message):
+    """Set how many evening questions to send"""
+    try:
+        count = int(msg.text.split(maxsplit=1)[1])
+        if count <= 0:
+            await msg.reply_text("❌ Count must be at least 1")
+            return
+        
+        global evening_question_count
+        evening_question_count = min(count, 5)  # Limit to 5 questions max
+        await msg.reply_text(f"✅ Evening question count set to {evening_question_count}")
+    except (ValueError, IndexError):
+        await msg.reply_text("Usage: /seteveningcount <number>")
+
+@bot.on_message(filters.command("setmorningtime") & filters.user(MY_USER_ID))
+async def set_morning_time(client: Client, msg: Message):
+    """Set the time to send morning questions"""
+    try:
+        time_str = msg.text.split(maxsplit=1)[1]
+        hour, minute = parse_time(time_str)
+        
+        global morning_question_time
+        morning_question_time = f"{hour:02d}:{minute:02d}"
+        
+        reschedule_job("send_morning_question", hour, minute)
+        await msg.reply_text(f"✅ Morning question time set to {morning_question_time} (Asia/Kolkata)")
+    except (ValueError, IndexError) as e:
+        await msg.reply_text(f"❌ {str(e)}\nUsage: /setmorningtime HH:MM (24-hour format)")
+
+@bot.on_message(filters.command("seteveningtime") & filters.user(MY_USER_ID))
+async def set_evening_time(client: Client, msg: Message):
+    """Set the time to send evening questions"""
+    try:
+        time_str = msg.text.split(maxsplit=1)[1]
+        hour, minute = parse_time(time_str)
+        
+        global evening_question_time
+        evening_question_time = f"{hour:02d}:{minute:02d}"
+        
+        reschedule_job("send_evening_question", hour, minute)
+        await msg.reply_text(f"✅ Evening question time set to {evening_question_time} (Asia/Kolkata)")
+    except (ValueError, IndexError) as e:
+        await msg.reply_text(f"❌ {str(e)}\nUsage: /seteveningtime HH:MM (24-hour format)")
+
+@bot.on_message(filters.command("questionstatus") & filters.user(MY_USER_ID))
+async def question_status(client: Client, msg: Message):
+    """Show current question settings"""
+    status_text = (
+        "📊 Question Settings:\n\n"
+        f"🌅 Morning:\n"
+        f"Time: {morning_question_time}\n"
+        f"Count: {morning_question_count}\n"
+        f"Questions in pool: {len(questions_morning)}\n\n"
+        f"🌇 Evening:\n"
+        f"Time: {evening_question_time}\n"
+        f"Count: {evening_question_count}\n"
+        f"Questions in pool: {len(questions_evening)}"
+    )
+    await msg.reply_text(status_text)
 
 # --- Fill in the Blanks Handlers ---
 @bot.on_message(filters.command("dailyq"))
@@ -663,153 +839,240 @@ async def set_night_handler(client: Client, msg: Message):
     greetings["night"] = parts[1]
     await msg.reply_text(f"✅ Night greeting updated to:\n{parts[1]}")
 
-@bot.on_message(filters.command("viewgreetings") & filters.user(MY_USER_ID))
-async def view_greetings_handler(client: Client, msg: Message):
-    greeting_text = "🌟 Current Greetings:\n\n"
-    greeting_text += f"🌅 Morning: {greetings['morning']}\n\n"
-    greeting_text += f"🌞 Afternoon: {greetings['afternoon']}\n\n"
-    greeting_text += f"🌙 Night: {greetings['night']}\n\n"
-    greeting_text += "Use /setmorning, /setafternoon, or /setnight to change them."
+@bot.on_message(filters.command("listgreetings") & filters.user(MY_USER_ID))
+async def list_greetings_handler(client: Client, msg: Message):
+    greeting_text = (
+        "🌅 Morning:\n" + greetings["morning"] + "\n\n"
+        "🌞 Afternoon:\n" + greetings["afternoon"] + "\n\n"
+        "🌙 Night:\n" + greetings["night"]
+    )
     await msg.reply_text(greeting_text)
 
-@bot.on_message(filters.command("resetgreetings") & filters.user(MY_USER_ID))
-async def reset_greetings_handler(client: Client, msg: Message):
-    greetings.update({
-        "morning": "🌞 Good morning bestie have a nice day! 💖",
-        "afternoon": "🌞 Good Afternoon Kritika Eat well! 💖🎶",
-        "night": "🌙 Good night Dumb Jigs I Like u the most 💫"
-    })
-    await msg.reply_text("✅ All greetings have been reset to default!")
-
-@bot.on_message(filters.command("testgreetings") & filters.user(MY_USER_ID))
-async def test_greetings_handler(client: Client, msg: Message):
-    await msg.reply_text("🧪 Testing all greetings:")
-    await asyncio.sleep(1)
-    await msg.reply_text(f"Morning: {greetings['morning']}")
-    await asyncio.sleep(1)
-    await msg.reply_text(f"Afternoon: {greetings['afternoon']}")
-    await asyncio.sleep(1)
-    await msg.reply_text(f"Night: {greetings['night']}")
-
-# --- Media Handlers ---
-@bot.on_message(filters.command(["photo", "vibe"]))
-async def photo_handler(client: Client, msg: Message):
-    try:
-        photo_files = [
-            os.path.join(PHOTO_FOLDER, f) 
-            for f in os.listdir(PHOTO_FOLDER) 
-            if f.lower().endswith(('.jpg', '.jpeg', '.png'))
-        ]
-        if photo_files:
-            await msg.reply_photo(random.choice(photo_files))
-        else:
-            await msg.reply_text("No photos available!")
-    except Exception as e:
-        await msg.reply_text(f"❌ Error: {str(e)}")
-
-@bot.on_message(filters.command("music"))
-async def music_handler(client: Client, msg: Message):
-    try:
-        song_files = [
-            os.path.join(SONG_FOLDER, f)
-            for f in os.listdir(SONG_FOLDER)
-            if f.lower().endswith(('.mp3', '.wav', '.m4a'))
-        ]
-        if song_files:
-            await msg.reply_audio(
-                audio=random.choice(song_files),
-                caption="Vibe 🎧"
-            )
-        else:
-            await msg.reply_text("No songs available!")
-    except Exception as e:
-        await msg.reply_text(f"❌ Error: {str(e)}")
-
-# --- Daily Messages ---
-async def send_good_morning():
+# --- Scheduled Greetings ---
+async def send_morning_greeting():
+    """Send morning greeting to bestie user"""
     await bot.send_message(BESTIE_USER_ID, greetings["morning"])
 
-async def send_good_afternoon():
+async def send_afternoon_greeting():
+    """Send afternoon greeting to bestie user"""
     await bot.send_message(BESTIE_USER_ID, greetings["afternoon"])
 
-async def send_good_night():
+async def send_night_greeting():
+    """Send night greeting to bestie user"""
     await bot.send_message(BESTIE_USER_ID, greetings["night"])
 
-# Schedule morning question at 12:00 AM (midnight)
-scheduler.add_job(send_morning_question, 'cron', hour=0, minute=0)
-# Schedule evening question at 6:00 PM
-scheduler.add_job(send_evening_question, 'cron', hour=18, minute=0)
-# Schedule greetings
-scheduler.add_job(send_good_morning, 'cron', hour=6, minute=0)
-scheduler.add_job(send_good_afternoon, 'cron', hour=13, minute=30)
-scheduler.add_job(send_good_night, 'cron', hour=22, minute=0)
+# --- Scheduled Greeting Management ---
+@bot.on_message(filters.command("setgreetingtime") & filters.user(MY_USER_ID))
+async def set_greeting_time_handler(client: Client, msg: Message):
+    """Set greeting times (morning, afternoon, night)"""
+    try:
+        parts = msg.text.split(maxsplit=2)
+        if len(parts) != 3:
+            raise ValueError("Usage: /setgreetingtime <morning|afternoon|night> HH:MM")
+        
+        greeting_type = parts[1].lower()
+        if greeting_type not in ["morning", "afternoon", "night"]:
+            raise ValueError("Invalid greeting type. Use morning/afternoon/night")
+        
+        hour, minute = parse_time(parts[2])
+        time_str = f"{hour:02d}:{minute:02d}"
+        
+        job_id = f"send_{greeting_type}_greeting"
+        reschedule_job(job_id, hour, minute)
+        
+        await msg.reply_text(f"✅ {greeting_type.capitalize()} greeting time set to {time_str} (Asia/Kolkata)")
+    except Exception as e:
+        await msg.reply_text(f"❌ {str(e)}")
 
-# --- Basic Commands ---
+# --- Random Quote Handler ---
+@bot.on_message(filters.command("quote") & filters.user(BESTIE_USER_ID))
+async def send_random_quote(client: Client, msg: Message):
+    """Send a random quote to bestie"""
+    quote = random.choice(quotes)
+    await msg.reply_text(quote)
+
+# --- Quote Management ---
+@bot.on_message(filters.command("addquote") & filters.user(MY_USER_ID))
+async def add_quote_handler(client: Client, msg: Message):
+    """Add a new quote to the pool"""
+    quote = msg.text.split(maxsplit=1)
+    if len(quote) < 2:
+        await msg.reply_text("Usage: /addquote <your quote>")
+        return
+    
+    quotes.append(quote[1])
+    await msg.reply_text(f"✅ Added quote:\n{quote[1]}")
+
+@bot.on_message(filters.command("removequote") & filters.user(MY_USER_ID))
+async def remove_quote_handler(client: Client, msg: Message):
+    """Remove a quote by index"""
+    try:
+        index = int(msg.text.split(maxsplit=1)[1]) - 1
+        if 0 <= index < len(quotes):
+            removed = quotes.pop(index)
+            await msg.reply_text(f"✅ Removed quote:\n{removed}")
+        else:
+            await msg.reply_text("❌ Invalid index. Use /listquotes to see indices.")
+    except (ValueError, IndexError):
+        await msg.reply_text("Usage: /removequote <index>")
+
+@bot.on_message(filters.command("listquotes") & filters.user(MY_USER_ID))
+async def list_quotes_handler(client: Client, msg: Message):
+    """List all quotes with indices"""
+    quotes_text = "📜 Quotes:\n" + "\n".join(
+        f"{i+1}. {q}" for i, q in enumerate(quotes)
+    ) if quotes else "No quotes yet!"
+    await msg.reply_text(quotes_text)
+
+# --- Photo Sharing ---
+@bot.on_message(filters.command("photo") & filters.user(BESTIE_USER_ID))
+async def send_random_photo(client: Client, msg: Message):
+    """Send a random photo from the photo folder"""
+    try:
+        photos = [f for f in os.listdir(PHOTO_FOLDER) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        if not photos:
+            await msg.reply_text("No photos available in the photo folder!")
+            return
+        
+        photo_path = os.path.join(PHOTO_FOLDER, random.choice(photos))
+        await msg.reply_photo(photo=photo_path)
+    except Exception as e:
+        await msg.reply_text(f"❌ Failed to send photo: {str(e)}")
+
+# --- Music Sharing ---
+@bot.on_message(filters.command("music") & filters.user(BESTIE_USER_ID))
+async def send_random_music(client: Client, msg: Message):
+    """Send a random music file from the music folder"""
+    try:
+        songs = [f for f in os.listdir(SONG_FOLDER) if f.lower().endswith(('.mp3', '.ogg', '.wav'))]
+        if not songs:
+            await msg.reply_text("No songs available in the music folder!")
+            return
+        
+        song_path = os.path.join(SONG_FOLDER, random.choice(songs))
+        await msg.reply_audio(audio=song_path)
+    except Exception as e:
+        await msg.reply_text(f"❌ Failed to send music: {str(e)}")
+
+# --- User ID Command ---
+@bot.on_message(filters.command("id"))
+async def get_user_id(client: Client, msg: Message):
+    """Get user ID"""
+    await msg.reply_text(f"Your user ID: {msg.from_user.id}")
+
 @bot.on_message(filters.command("start"))
 async def start_handler(client: Client, msg: Message):
+    user_id = msg.from_user.id
+    name = msg.from_user.first_name or "there"
+
     base_text = (
-        "Hey Dumb! 💌\n\nI'm your special bot made with love.\nCommands:\n"
-        "/quote – sweet message 💬\n/photo or /vibe – surprise pic 📸\n/music – vibe 🎶\n"
-        "/id – your ID 🔍\n/ttt – play solo TTT 🎮\n/onlinettt – play with others 🌐\n"
-        "/dailyq – daily questions (special users only) 📝\n"
-        "/cancelqueue – leave matchmaking queue ❌\n/say – send message to opponent 💬"
+        f"👋 Hello, *{name}*!\n\n"
+        "Welcome to *BestieBot*! 💖\n"
+        "Here’s what you can do:\n\n"
+        "💖 *Daily & Fun Commands*:\n"
+        "• /dailyq – See today’s questions\n"
+        "• /quote – Get a random quote\n"
+        "• /photo – Receive a surprise photo\n"
+        "• /music – Vibe with a random song\n"
+        "• /ttt – Play Tic Tac Toe vs bot\n"
+        "• /onlinettt – Multiplayer Tic Tac Toe\n"
+        "• /cancelqueue – Leave multiplayer queue\n"
+        "• /say <message> – Chat with your opponent\n"
+        "• /id – Show your Telegram ID\n"
     )
-    
-    if msg.from_user.id == MY_USER_ID:
-        base_text += (
-            "\n\n🔧 Admin Commands:\n"
-            "/getcode – get current bot code 📄\n"
-            "/updatecode – update bot code (reply to file) 🔄\n"
-            "/viewgreetings – see current greetings 👀\n"
-            "/setmorning – change morning message 🌅\n"
-            "/setafternoon – change afternoon message 🌞\n"
-            "/setnight – change night message 🌙\n"
-            "/resetgreetings – reset to defaults 🔄\n"
-            "/testgreetings – test all greetings 🧪"
-        )
-    
-    await msg.reply_text(base_text)
 
-@bot.on_message(filters.command("quote"))
-async def quote_handler(client: Client, msg: Message):
-    await msg.reply_text(random.choice(quotes))
+    admin_text = (
+        "\n🛠️ *Admin Commands*:\n"
+        "• /addmorningq, /addeveningq <q>\n"
+        "• /removemq, /removeeq <index>\n"
+        "• /listquestions\n"
+        "• /setmorningcount, /seteveningcount <n>\n"
+        "• /setmorningtime, /seteveningtime HH:MM\n"
+        "• /questionstatus\n"
+        "• /addquote, /removequote <i>, /listquotes\n"
+        "• /setmorning, /setafternoon, /setnight <msg>\n"
+        "• /listgreetings\n"
+        "• /setgreetingtime <type> HH:MM\n"
+        "• /getcode, /updatecode\n"
+    )
 
-@bot.on_message(filters.command("id"))
-async def id_handler(client: Client, msg: Message):
-    await msg.reply_text(f"Your user ID is: {msg.from_user.id}")
+    final_message = base_text
+    if user_id == MY_USER_ID:
+        final_message += admin_text
 
-@bot.on_callback_query(filters.regex("noop"))
-async def noop_handler(client: Client, cq: CallbackQuery):
-    await cq.answer()
+    await msg.reply_text(final_message, parse_mode="markdown")
 
-# --- FastAPI Webhook ---
-@app.post(f"/{BOT_TOKEN}")
-async def telegram_webhook(request: Request):
-    update_data = await request.json()
-    update = Update.de_json(update_data, bot)
-    await bot.process_update(update)
-    return PlainTextResponse("ok")
-
-@app.get("/")
-async def root():
-    return {"message": "Bestie Bot is running!"}
-
-# --- Startup/Shutdown Events ---
+# --- Startup and Shutdown ---
 @app.on_event("startup")
-async def startup_event():
+async def startup():
     await bot.start()
     scheduler.start()
-    async with httpx.AsyncClient() as client:
-        await client.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
-            data={"url": f"{WEBHOOK_URL}/{BOT_TOKEN}"}
-        )
+    
+    # Schedule greetings
+    morning_hour, morning_minute = parse_time("06:00")
+    afternoon_hour, afternoon_minute = parse_time("12:00")
+    night_hour, night_minute = parse_time("22:00")
+    
+    scheduler.add_job(
+        send_morning_greeting,
+        'cron',
+        hour=morning_hour,
+        minute=morning_minute,
+        id="send_morning_greeting"
+    )
+    
+    scheduler.add_job(
+        send_afternoon_greeting,
+        'cron',
+        hour=afternoon_hour,
+        minute=afternoon_minute,
+        id="send_afternoon_greeting"
+    )
+    
+    scheduler.add_job(
+        send_night_greeting,
+        'cron',
+        hour=night_hour,
+        minute=night_minute,
+        id="send_night_greeting"
+    )
+    
+    # Schedule daily questions
+    morning_q_hour, morning_q_minute = parse_time(morning_question_time)
+    evening_q_hour, evening_q_minute = parse_time(evening_question_time)
+    
+    scheduler.add_job(
+        send_morning_question,
+        'cron',
+        hour=morning_q_hour,
+        minute=morning_q_minute,
+        id="send_morning_question"
+    )
+    
+    scheduler.add_job(
+        send_evening_question,
+        'cron',
+        hour=evening_q_hour,
+        minute=evening_q_minute,
+        id="send_evening_question"
+    )
 
 @app.on_event("shutdown")
-async def shutdown_event():
+async def shutdown():
     await bot.stop()
-    scheduler.shutdown()
 
+# --- Webhook Handler ---
+@app.post("/webhook")
+async def webhook_handler(request: Request):
+    try:
+        update = await request.json()
+        update = Update(**update)
+        await bot.process_update(update)
+        return PlainTextResponse("OK")
+    except Exception as e:
+        return PlainTextResponse(f"Error: {str(e)}", status_code=500)
+
+# --- Main Entry Point ---
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
